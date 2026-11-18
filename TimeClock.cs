@@ -25,6 +25,7 @@ public class Employee
 {
     public string Name { get; set; }
     public string PinCredential { get; set; }
+    public bool Inactive { get; set; }
     public List<Shift> Shifts { get; set; }
 
     public Employee()
@@ -103,6 +104,7 @@ internal sealed class TimeClock : Form, IMessageFilter
     private int failedAttempts;
     private DateTime retryAfter;
     private readonly ComboBox people = new ComboBox();
+    private readonly List<int> activeEmployeeIndexes = new List<int>();
     private readonly Label status = new Label();
     private readonly Label elapsed = new Label();
     private readonly Label details = new Label();
@@ -350,9 +352,14 @@ internal sealed class TimeClock : Form, IMessageFilter
         people.Focus();
     }
 
+    private int SelectedEmployeeIndex
+    {
+        get { return people.SelectedIndex < 0 ? -1 : activeEmployeeIndexes[people.SelectedIndex]; }
+    }
+
     private Employee SelectedEmployee
     {
-        get { return people.SelectedIndex < 0 ? null : employees[people.SelectedIndex]; }
+        get { return SelectedEmployeeIndex < 0 ? null : employees[SelectedEmployeeIndex]; }
     }
 
     private Shift ActiveShift
@@ -383,8 +390,14 @@ internal sealed class TimeClock : Form, IMessageFilter
     private void PopulateEmployees(int index)
     {
         people.Items.Clear();
-        foreach (Employee employee in employees) people.Items.Add(employee.Name);
-        if (employees.Count > 0) people.SelectedIndex = index;
+        activeEmployeeIndexes.Clear();
+        for (int employeeIndex = 0; employeeIndex < employees.Count; employeeIndex++)
+        {
+            if (employees[employeeIndex].Inactive) continue;
+            activeEmployeeIndexes.Add(employeeIndex);
+            people.Items.Add(employees[employeeIndex].Name);
+        }
+        people.SelectedIndex = activeEmployeeIndexes.IndexOf(index);
         RefreshEmployee();
     }
 
@@ -503,7 +516,7 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private void ShowSupervisorPanel()
     {
-        int previousEmployee = people.SelectedIndex;
+        int previousEmployee = SelectedEmployeeIndex;
         bool restartingForUpdate = false;
         using (var dialog = SupervisorDialog("Supervisor timesheets", 760, 594))
         {
@@ -558,6 +571,15 @@ internal sealed class TimeClock : Form, IMessageFilter
                 if (picker.SelectedIndex < 0 || grid.SelectedRows.Count != 1) return;
                 if (DeleteShift(dialog, picker.SelectedIndex, (int)grid.SelectedRows[0].Tag)) refresh();
             });
+            Button changeStatus = null;
+            changeStatus = AddDialogButton(footer, "Deactivate employee", 155, false, () =>
+            {
+                int index = picker.SelectedIndex;
+                if (index < 0 || !ChangeEmployeeStatus(dialog, index)) return;
+                picker.Items[index] = SupervisorEmployeeName(employees[index]);
+                picker.SelectedIndex = index;
+                changeStatus.Text = EmployeeStatusAction(employees[index].Inactive);
+            });
             AddDialogButton(footer, "Weekly export", 145, true, () =>
             {
                 if (ExportWeeklyTimesheets(dialog)) refresh();
@@ -578,11 +600,13 @@ internal sealed class TimeClock : Form, IMessageFilter
             grid.CellDoubleClick += (sender, args) => { if (args.RowIndex >= 0) edit(); };
             picker.SelectedIndexChanged += (sender, args) =>
             {
-                addShift.Enabled = setPin.Enabled = picker.SelectedIndex >= 0;
+                int index = picker.SelectedIndex;
+                addShift.Enabled = setPin.Enabled = changeStatus.Enabled = index >= 0;
+                changeStatus.Text = EmployeeStatusAction(index >= 0 && employees[index].Inactive);
                 refresh();
             };
-            foreach (Employee employee in employees) picker.Items.Add(employee.Name);
-            editButton.Enabled = delete.Enabled = addShift.Enabled = setPin.Enabled = false;
+            foreach (Employee employee in employees) picker.Items.Add(SupervisorEmployeeName(employee));
+            editButton.Enabled = delete.Enabled = addShift.Enabled = setPin.Enabled = changeStatus.Enabled = false;
             if (picker.Items.Count > 0) picker.SelectedIndex = Math.Max(0, previousEmployee);
             layout.Controls.Add(tools, 0, 0);
             layout.Controls.Add(grid, 0, 1);
@@ -592,6 +616,38 @@ internal sealed class TimeClock : Form, IMessageFilter
         }
         if (restartingForUpdate) Close();
         else PopulateEmployees(previousEmployee);
+    }
+
+    private static string SupervisorEmployeeName(Employee employee)
+    {
+        return employee.Name + (employee.Inactive ? " (Inactive)" : "");
+    }
+
+    private static string EmployeeStatusAction(bool inactive)
+    {
+        return inactive ? "Reactivate employee" : "Deactivate employee";
+    }
+
+    private bool ChangeEmployeeStatus(Form owner, int index)
+    {
+        Employee employee = employees[index];
+        bool deactivate = !employee.Inactive;
+        if (deactivate && employee.Shifts.Any(shift => !shift.End.HasValue))
+        {
+            MessageBox.Show(owner, "Close the employee's open shift with Edit shift before deactivating them.",
+                "Open shift", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+
+        string title = EmployeeStatusAction(employee.Inactive);
+        string message = deactivate
+            ? "Deactivate " + employee.Name + "? They will be removed from the punch screen. Their shifts stay available for payroll."
+            : "Reactivate " + employee.Name + "? They will be able to clock in again.";
+        if (MessageBox.Show(owner, message, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+            return false;
+
+        return SaveChange(records => records[index].Inactive = deactivate);
     }
 
     private static string BuildDisplay()
@@ -1267,6 +1323,8 @@ internal sealed class TimeClock : Form, IMessageFilter
                 {
                     var revised = new Shift { Start = clockIn.ReadUtc().Value, End = clockOutField.ReadUtc() };
                     foreach (DataGridViewRow row in breaks.Rows) revised.Breaks.Add((Break)row.Tag);
+                    if (employee.Inactive && !revised.End.HasValue)
+                        throw new FormatException("Enter a clock-out time for an inactive employee.");
                     ValidateShift(revised, employee.Shifts.Where((shift, index) => index != shiftIndex));
                     if (SaveChange(records =>
                     {
@@ -1538,8 +1596,8 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private string RecordPunch(bool finishShift, string pin)
     {
-        int employeeIndex = people.SelectedIndex;
-        if (employeeIndex < 0 || string.IsNullOrEmpty(SelectedEmployee.PinCredential))
+        int employeeIndex = SelectedEmployeeIndex;
+        if (employeeIndex < 0 || SelectedEmployee.Inactive || string.IsNullOrEmpty(SelectedEmployee.PinCredential))
             return "Ask a supervisor to set your employee PIN.";
 
         string error = Authenticate(SelectedEmployee.PinCredential, pin);
