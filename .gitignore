@@ -1,0 +1,7 @@
+*.exe
+*.pdb
+*.tmp
+*.csv
+time-records.xml
+payroll-email.xml
+supervisor-pin.txt
