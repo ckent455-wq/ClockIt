@@ -12,6 +12,10 @@ To email the report, open **Payroll email** and configure the Gmail sender, Goog
 
 The large punch buttons and built-in keyboards support tablet use. After ten seconds of inactivity, the live clock and fishbowl appear. Tap the screen to return to the employee picker.
 
+## Update ClockIt!
+
+In the supervisor panel, select **Check for updates**, then **Install and restart** when an updated build is available. ClockIt downloads the executable from the latest GitHub release, verifies the checksum, and restarts with the same local data.
+
 ## Build from source
 
 On Windows, run the build script from PowerShell:

@@ -18,6 +18,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 
 public class Employee
 {
@@ -490,6 +492,7 @@ internal sealed class TimeClock : Form, IMessageFilter
     private void ShowSupervisorPanel()
     {
         int previousEmployee = people.SelectedIndex;
+        bool restartingForUpdate = false;
         using (var dialog = SupervisorDialog("Supervisor timesheets", 760, 564))
         {
             var layout = DialogLayout(dialog, 48, 0, 45, 44);
@@ -550,6 +553,11 @@ internal sealed class TimeClock : Form, IMessageFilter
             var settings = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
             AddDialogButton(settings, "Change supervisor PIN", 186, false, ChangeSupervisorPin);
             AddDialogButton(settings, "Payroll email", 128, false, () => ConfigurePayrollEmail(dialog));
+            AddDialogButton(settings, "Check for updates", 164, false, () =>
+            {
+                restartingForUpdate = ShowUpdater(dialog);
+                if (restartingForUpdate) dialog.DialogResult = DialogResult.OK;
+            });
             Button close = AddDialogButton(settings, "Close", 95, false, dialog.Close);
             dialog.CancelButton = close;
             grid.SelectionChanged += (sender, args) => editButton.Enabled = delete.Enabled = grid.SelectedRows.Count == 1;
@@ -568,7 +576,68 @@ internal sealed class TimeClock : Form, IMessageFilter
             layout.Controls.Add(settings, 0, 3);
             dialog.ShowDialog(this);
         }
-        PopulateEmployees(previousEmployee);
+        if (restartingForUpdate) Close();
+        else PopulateEmployees(previousEmployee);
+    }
+
+    private bool ShowUpdater(Form owner)
+    {
+        using (var dialog = SupervisorDialog("ClockIt! updates", 510, 186))
+        {
+            var layout = DialogLayout(dialog, 0, 44);
+            var message = new Label { Dock = DockStyle.Fill, Text = "Checking GitHub for the latest ClockIt build…" };
+            layout.Controls.Add(message, 0, 0);
+            var actions = new FlowLayoutPanel { Dock = DockStyle.Fill };
+            ClockItUpdater.Update update = null;
+            bool busy = true;
+            Button install = null;
+            Button close = null;
+            string path = Application.ExecutablePath;
+            install = AddDialogButton(actions, "Install and restart", 160, true, async () =>
+            {
+                if (busy || update == null) return;
+                busy = true;
+                install.Enabled = close.Enabled = false;
+                message.Text = "Downloading and verifying " + update.VersionName + "…";
+                try
+                {
+                    await ClockItUpdater.InstallAsync(update, path);
+                    busy = false;
+                    dialog.DialogResult = DialogResult.OK;
+                }
+                catch (Exception error)
+                {
+                    message.Text = "Could not prepare the update. " + error.Message;
+                    busy = false;
+                    install.Enabled = close.Enabled = true;
+                }
+            });
+            close = AddDialogButton(actions, "Close", 95, false, dialog.Close);
+            install.Enabled = close.Enabled = false;
+            dialog.CancelButton = close;
+            dialog.FormClosing += (sender, args) => { if (busy) args.Cancel = true; };
+            dialog.Shown += async (sender, args) =>
+            {
+                try
+                {
+                    update = await ClockItUpdater.CheckAsync(path, typeof(TimeClock).Assembly.GetName().Version);
+                    message.Text = update == null ? "You’re up to date." :
+                        "GitHub has an updated " + update.VersionName + " build. ClockIt will restart after installation.";
+                    install.Enabled = update != null;
+                }
+                catch (Exception error)
+                {
+                    message.Text = "Could not check for updates. " + error.Message;
+                }
+                finally
+                {
+                    busy = false;
+                    close.Enabled = true;
+                }
+            };
+            layout.Controls.Add(actions, 0, 1);
+            return dialog.ShowDialog(owner) == DialogResult.OK;
+        }
     }
 
     private bool ExportWeeklyTimesheets(Form owner)

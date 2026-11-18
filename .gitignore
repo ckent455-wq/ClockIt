@@ -5,3 +5,5 @@
 time-records.xml
 payroll-email.xml
 supervisor-pin.txt
+*.update
+*.update.backup
