@@ -775,12 +775,13 @@ internal sealed class TimeClock : Form, IMessageFilter
                 Text = email == null ? "Set up Payroll email in the supervisor panel." : "To: " + email.Recipient
             }, 0, 1);
 
-            var preview = TimesheetGrid("Row type", "Employee", "Start (local)", "End (local)", "Breaks", "Worked", "Worked hours");
+            var preview = TimesheetGrid("Row type", "Employee", "Start (local)", "End (local)", "Breaks", "Worked", "Worked hours", "Status");
             preview.AccessibleName = "Weekly payroll preview";
             preview.Columns[1].FillWeight = 117;
             preview.Columns[2].FillWeight = preview.Columns[3].FillWeight = 143;
             preview.Columns[4].FillWeight = preview.Columns[5].FillWeight = 62;
             preview.Columns[6].FillWeight = 101;
+            preview.Columns[7].FillWeight = 69;
             layout.Controls.Add(preview, 0, 2);
             var reportNotice = new Label { Dock = DockStyle.Fill, ForeColor = Muted };
             layout.Controls.Add(reportNotice, 0, 3);
@@ -1133,7 +1134,8 @@ internal sealed class TimeClock : Form, IMessageFilter
             {
                 IsTotal ? "Employee total" : "Shift", Employee.Name,
                 Start.HasValue ? PayrollTime(Start.Value) : "", End.HasValue ? PayrollTime(End.Value) : "",
-                Duration(BreakTime), Duration(WorkedTime), WorkedTime.TotalHours.ToString("0.0000", CultureInfo.InvariantCulture)
+                Duration(BreakTime), Duration(WorkedTime), WorkedTime.TotalHours.ToString("0.0000", CultureInfo.InvariantCulture),
+                Employee.Inactive ? "Inactive" : "Active"
             };
         }
     }
@@ -1152,14 +1154,14 @@ internal sealed class TimeClock : Form, IMessageFilter
         public string ToCsv()
         {
             var csv = new StringBuilder();
-            csv.AppendLine("Row type,Employee,Week start,Week end,Start in period (local),End in period (local),Break duration,Worked duration,Worked hours");
+            csv.AppendLine("Row type,Employee,Week start,Week end,Start in period (local),End in period (local),Break duration,Worked duration,Worked hours,Employee status");
             string weekStart = FirstDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             string weekEnd = FirstDay.AddDays(6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             foreach (PayrollRow row in Rows)
             {
                 string[] columns = row.Columns();
                 csv.AppendLine(string.Join(",", columns[0], PayrollCsvName(columns[1]), weekStart, weekEnd,
-                    columns[2], columns[3], columns[4], columns[5], columns[6]));
+                    columns[2], columns[3], columns[4], columns[5], columns[6], columns[7]));
             }
             return csv.ToString();
         }
