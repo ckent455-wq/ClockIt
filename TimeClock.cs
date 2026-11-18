@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Diagnostics;
@@ -505,9 +505,9 @@ internal sealed class TimeClock : Form, IMessageFilter
     {
         int previousEmployee = people.SelectedIndex;
         bool restartingForUpdate = false;
-        using (var dialog = SupervisorDialog("Supervisor timesheets", 760, 564))
+        using (var dialog = SupervisorDialog("Supervisor timesheets", 760, 594))
         {
-            var layout = DialogLayout(dialog, 48, 0, 45, 44);
+            var layout = DialogLayout(dialog, 48, 0, 45, 44, 30);
             var tools = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
             var picker = new ComboBox();
             ConfigureEmployeePicker(picker);
@@ -592,6 +592,14 @@ internal sealed class TimeClock : Form, IMessageFilter
         }
         if (restartingForUpdate) Close();
         else PopulateEmployees(previousEmployee);
+    }
+
+    private static string BuildDisplay()
+    {
+        Assembly assembly = typeof(TimeClock).Assembly;
+        string version = "v" + assembly.GetName().Version.ToString(3);
+        var stamp = assembly.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(item => item.Key == "BuildUtc");
+        return version + "   |   " + (stamp == null ? "Build date unavailable" : "Built " + stamp.Value);
     }
 
     private async Task CheckForStartupUpdateAsync()
