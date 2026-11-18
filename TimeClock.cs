@@ -290,7 +290,6 @@ internal sealed class TimeClock : Form, IMessageFilter
         {
             case 0x0100: // WM_KEYDOWN
             case 0x0104: // WM_SYSKEYDOWN
-            case 0x0200: // WM_MOUSEMOVE
             case 0x0201: // WM_LBUTTONDOWN
             case 0x0204: // WM_RBUTTONDOWN
             case 0x020A: // WM_MOUSEWHEEL
@@ -309,7 +308,7 @@ internal sealed class TimeClock : Form, IMessageFilter
             return;
         }
 
-        if (inactiveFor >= IdleDelay && ActiveForm == this)
+        if (inactiveFor >= IdleDelay && CanShowIdleScreen())
         {
             people.SelectedIndex = -1;
             idleClock.Text = DateTime.Now.ToString("h:mm tt", CultureInfo.InvariantCulture);
@@ -321,6 +320,12 @@ internal sealed class TimeClock : Form, IMessageFilter
         }
 
         RefreshClock();
+    }
+
+    private bool CanShowIdleScreen()
+    {
+        return Visible && Enabled && WindowState != FormWindowState.Minimized &&
+            !Application.OpenForms.Cast<Form>().Any(form => form != this && form.Visible);
     }
 
     private void DismissIdleClock()
@@ -1406,8 +1411,9 @@ internal sealed class TimeClock : Form, IMessageFilter
     {
         if (SelectedEmployee == null || string.IsNullOrEmpty(SelectedEmployee.PinCredential)) return;
         string action = finishShift ? clockOut.Text : punch.Text;
-        ShowPinDialog(action, "Enter the employee PIN for " + SelectedEmployee.Name + ".", false, false,
-            (name, pin) => RecordPunch(finishShift, pin), PinLengthLimit(SelectedEmployee.PinCredential));
+        if (ShowPinDialog(action, "Enter the employee PIN for " + SelectedEmployee.Name + ".", false, false,
+            (name, pin) => RecordPunch(finishShift, pin), PinLengthLimit(SelectedEmployee.PinCredential)))
+            inactivity.Restart();
     }
 
     private string RecordPunch(bool finishShift, string pin)
