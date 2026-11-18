@@ -14,7 +14,7 @@ The large punch buttons and built-in keyboards support tablet use. After ten sec
 
 ## Update ClockIt!
 
-In the supervisor panel, select **Check for updates**, then **Install and restart** when an updated build is available. ClockIt downloads the executable from the latest GitHub release, verifies the checksum, and restarts with the same local data.
+ClockIt checks for updates when it starts. If an update is available, select **Install and restart** and enter the supervisor PIN to approve it. You can also select **Check for updates** in the supervisor panel. ClockIt downloads the executable from the latest GitHub release, verifies the checksum, and restarts with the same local data.
 
 ## Build from source
 

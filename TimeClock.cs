@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Diagnostics;
@@ -95,6 +95,8 @@ internal sealed class TimeClock : Form, IMessageFilter
     private readonly string supervisorPath;
     private readonly string payrollEmailPath;
     private readonly Stopwatch inactivity = Stopwatch.StartNew();
+    private ClockItUpdater.Update startupUpdate;
+    private bool manualUpdateChecked;
     private readonly FishbowlClock idleClock = new FishbowlClock();
     private readonly TableLayoutPanel employeeView;
     private readonly Button managePin = new Button { Text = "Set employee PIN" };
@@ -251,10 +253,11 @@ internal sealed class TimeClock : Form, IMessageFilter
         timer.Tick += (sender, args) => UpdateIdleScreen(inactivity.Elapsed);
         timer.Start();
         Activated += (sender, args) => inactivity.Restart();
-        Shown += (sender, args) =>
+        Shown += async (sender, args) =>
         {
             Application.AddMessageFilter(this);
             RunFirstTimeSetup();
+            if (!IsDisposed && !manualUpdateChecked) await CheckForStartupUpdateAsync();
         };
         FormClosed += (sender, args) =>
         {
@@ -307,6 +310,15 @@ internal sealed class TimeClock : Form, IMessageFilter
         if (idleClock.Visible)
         {
             idleClock.Text = DateTime.Now.ToString("h:mm tt", CultureInfo.InvariantCulture);
+            return;
+        }
+
+        if (startupUpdate != null && ActiveForm == this && people.SelectedIndex < 0 &&
+            !people.DroppedDown && CanShowIdleScreen())
+        {
+            ClockItUpdater.Update update = startupUpdate;
+            startupUpdate = null;
+            if (ShowUpdater(this, update)) Close();
             return;
         }
 
@@ -555,6 +567,8 @@ internal sealed class TimeClock : Form, IMessageFilter
             AddDialogButton(settings, "Payroll email", 128, false, () => ConfigurePayrollEmail(dialog));
             AddDialogButton(settings, "Check for updates", 164, false, () =>
             {
+                manualUpdateChecked = true;
+                startupUpdate = null;
                 restartingForUpdate = ShowUpdater(dialog);
                 if (restartingForUpdate) dialog.DialogResult = DialogResult.OK;
             });
@@ -580,16 +594,40 @@ internal sealed class TimeClock : Form, IMessageFilter
         else PopulateEmployees(previousEmployee);
     }
 
-    private bool ShowUpdater(Form owner)
+    private async Task CheckForStartupUpdateAsync()
+    {
+        try
+        {
+            ClockItUpdater.Update update = await ClockItUpdater.CheckAsync(
+                Application.ExecutablePath, typeof(TimeClock).Assembly.GetName().Version);
+            if (!IsDisposed && !manualUpdateChecked) startupUpdate = update;
+        }
+        catch (Exception)
+        {
+            // An unavailable update service should never prevent employees from clocking in.
+        }
+    }
+
+    private static string DescribeUpdate(ClockItUpdater.Update update)
+    {
+        return update == null ? "You're up to date." :
+            "GitHub has an updated " + update.VersionName + " build. ClockIt will restart after installation.";
+    }
+
+    private bool ShowUpdater(Form owner, ClockItUpdater.Update availableAtStartup = null)
     {
         using (var dialog = SupervisorDialog("ClockIt! updates", 510, 186))
         {
             var layout = DialogLayout(dialog, 0, 44);
-            var message = new Label { Dock = DockStyle.Fill, Text = "Checking GitHub for the latest ClockIt build…" };
+            var message = new Label
+            {
+                Dock = DockStyle.Fill,
+                Text = availableAtStartup == null ? "Checking GitHub for the latest ClockIt build…" : DescribeUpdate(availableAtStartup)
+            };
             layout.Controls.Add(message, 0, 0);
             var actions = new FlowLayoutPanel { Dock = DockStyle.Fill };
-            ClockItUpdater.Update update = null;
-            bool busy = true;
+            ClockItUpdater.Update update = availableAtStartup;
+            bool busy = update == null;
             Button install = null;
             Button close = null;
             string path = Application.ExecutablePath;
@@ -598,9 +636,11 @@ internal sealed class TimeClock : Form, IMessageFilter
                 if (busy || update == null) return;
                 busy = true;
                 install.Enabled = close.Enabled = false;
-                message.Text = "Downloading and verifying " + update.VersionName + "…";
                 try
                 {
+                    if (availableAtStartup != null && !AuthorizeSupervisor()) return;
+
+                    message.Text = "Downloading and verifying " + update.VersionName + "…";
                     await ClockItUpdater.InstallAsync(update, path);
                     busy = false;
                     dialog.DialogResult = DialogResult.OK;
@@ -608,21 +648,24 @@ internal sealed class TimeClock : Form, IMessageFilter
                 catch (Exception error)
                 {
                     message.Text = "Could not prepare the update. " + error.Message;
+                }
+                finally
+                {
                     busy = false;
                     install.Enabled = close.Enabled = true;
                 }
             });
             close = AddDialogButton(actions, "Close", 95, false, dialog.Close);
-            install.Enabled = close.Enabled = false;
+            install.Enabled = close.Enabled = !busy;
             dialog.CancelButton = close;
             dialog.FormClosing += (sender, args) => { if (busy) args.Cancel = true; };
             dialog.Shown += async (sender, args) =>
             {
+                if (availableAtStartup != null) return;
                 try
                 {
                     update = await ClockItUpdater.CheckAsync(path, typeof(TimeClock).Assembly.GetName().Version);
-                    message.Text = update == null ? "You’re up to date." :
-                        "GitHub has an updated " + update.VersionName + " build. ClockIt will restart after installation.";
+                    message.Text = DescribeUpdate(update);
                     install.Enabled = update != null;
                 }
                 catch (Exception error)
