@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Diagnostics;
@@ -18,8 +18,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.0.2.0")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
 
 public class Employee
 {
@@ -1264,70 +1264,184 @@ internal sealed class TimeClock : Form, IMessageFilter
     {
         Employee employee = employees[employeeIndex];
         Shift original = shiftIndex.HasValue ? employee.Shifts[shiftIndex.Value] : null;
-        using (var dialog = SupervisorDialog(original == null ? "Add shift" : "Edit shift", 748, 508))
+        using (var dialog = SupervisorDialog(original == null ? "Add shift" : "Edit shift", 806, 575))
         {
-            var layout = DialogLayout(dialog, 37, 78, 31, 0, 48, 37, 43);
+            var layout = DialogLayout(dialog, 34, 0, 32, 42, 48);
             layout.Controls.Add(new Label { Text = employee.Name, Dock = DockStyle.Fill,
                 Font = new Font("Segoe UI", 15, FontStyle.Bold), AutoEllipsis = true }, 0, 0);
+            var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
+            layout.Controls.Add(body, 0, 1);
+            var fields = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown,
+                AutoScroll = true, WrapContents = false };
+            body.Controls.Add(fields, 0, 0);
 
-            var fields = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+            var keypad = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown,
+                WrapContents = false, BackColor = Surface, Padding = new Padding(10) };
+            body.Controls.Add(keypad, 1, 0);
+            var entry = new Label { Width = 295, Height = 38, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
+            keypad.Controls.Add(entry);
+            var periods = new FlowLayoutPanel { Width = 295, Height = 45, WrapContents = false };
+            keypad.Controls.Add(periods);
+            var keys = new TableLayoutPanel { Width = 295, Height = 204, ColumnCount = 3, RowCount = 4 };
+            for (int column = 0; column < 3; column++) keys.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+            for (int row = 0; row < 4; row++) keys.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
+            keypad.Controls.Add(keys);
+            var applyRow = new FlowLayoutPanel { Width = 295, Height = 47 };
+            keypad.Controls.Add(applyRow);
+            var total = new Label { Dock = DockStyle.Fill, ForeColor = Accent, Font = new Font("Segoe UI", 13, FontStyle.Bold) };
+            layout.Controls.Add(total, 0, 2);
+            var feedback = new Label { Dock = DockStyle.Fill, ForeColor = Color.LightSalmon };
+            layout.Controls.Add(feedback, 0, 3);
+
+            var breaks = new List<Tuple<DateTimeSelection, DateTimeSelection>>();
+            DateTimeSelection target = null;
+            string digits = "";
+            bool pm = false;
+            bool pending = false;
+            Button save = null;
+            Button apply = null;
+            Button amButton = null;
+            Button pmButton = null;
+            Action refresh = null;
+            Action selectTime = () =>
+            {
+                if (target != null && !target.HasTime) target = null;
+                entry.Text = target == null ? "Select a time" : target.FieldName + "   " +
+                    (digits.Length == 0 ? target.LocalValue.ToString("h:mm", CultureInfo.InvariantCulture) : digits);
+                amButton.BackColor = !pm && target != null ? Highlight : Input;
+                pmButton.BackColor = pm && target != null ? Highlight : Input;
+                periods.Enabled = keys.Enabled = target != null;
+                apply.Enabled = target != null && pending;
+            };
+            Action<DateTimeSelection> activate = field =>
+            {
+                target = field;
+                digits = "";
+                pm = field != null && field.LocalValue.Hour >= 12;
+                pending = false;
+                selectTime();
+                refresh();
+            };
             var clockIn = new DateTimeSelection("Clock in", original == null ? (DateTime?)null : original.Start, DateTime.Now);
             var clockOutField = new DateTimeSelection("Clock out", original == null ? null : original.End,
                 clockIn.LocalValue, () => clockIn.LocalValue);
+            Action<DateTimeSelection> connect = field =>
+            {
+                field.EditTime += () => activate(field);
+                field.ValueChanged += () =>
+                {
+                    if (field == target && !field.HasTime) activate(null);
+                    else refresh();
+                };
+            };
+            connect(clockIn);
+            connect(clockOutField);
             fields.Controls.Add(clockIn);
             fields.Controls.Add(clockOutField);
-            layout.Controls.Add(fields, 0, 1);
-            layout.Controls.Add(new Label { Text = "Breaks", Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft }, 0, 2);
 
-            var breaks = TimesheetGrid("Break start", "Break end");
-            breaks.AccessibleName = "Break times";
-            foreach (Break interval in original == null ? Enumerable.Empty<Break>() : original.Breaks)
-                DisplayBreak(breaks.Rows[breaks.Rows.Add()], interval);
-            layout.Controls.Add(breaks, 0, 3);
-
-            var breakActions = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 6, 0, 0) };
-            AddDialogButton(breakActions, "Add break", 113, false, () =>
+            var breakActions = new FlowLayoutPanel { Width = 350, Height = 44, WrapContents = false };
+            fields.Controls.Add(breakActions);
+            Action<Break> addBreak = existing =>
             {
-                Break interval = ShowBreakEditor(dialog, null, clockIn.LocalValue);
-                if (interval == null) return;
-                DataGridViewRow row = breaks.Rows[breaks.Rows.Add()];
-                DisplayBreak(row, interval);
-                breaks.CurrentCell = row.Cells[0];
-            });
-            Action editBreak = () =>
-            {
-                if (breaks.SelectedRows.Count != 1) return;
-                DataGridViewRow row = breaks.SelectedRows[0];
-                Break interval = ShowBreakEditor(dialog, (Break)row.Tag, clockIn.LocalValue);
-                if (interval != null) DisplayBreak(row, interval);
+                var start = new DateTimeSelection("Break start", existing == null ? (DateTime?)null : existing.Start, clockIn.LocalValue);
+                var end = new DateTimeSelection("Break end", existing == null ? null : existing.End,
+                    start.LocalValue, () => start.LocalValue);
+                var pair = Tuple.Create(start, end);
+                var group = new FlowLayoutPanel { Width = 357, Height = 198, WrapContents = false,
+                    FlowDirection = FlowDirection.TopDown, BackColor = Surface, Margin = new Padding(0, 4, 0, 4) };
+                group.Controls.Add(start);
+                group.Controls.Add(end);
+                var removeRow = new FlowLayoutPanel { Width = 335, Height = 40 };
+                AddDialogButton(removeRow, "Remove break", 135, false, () =>
+                {
+                    breaks.Remove(pair);
+                    if (target == start || target == end) activate(null);
+                    group.Dispose();
+                    refresh();
+                });
+                group.Controls.Add(removeRow);
+                breaks.Add(pair);
+                connect(start);
+                connect(end);
+                fields.Controls.Add(group);
+                if (existing == null)
+                {
+                    fields.ScrollControlIntoView(group);
+                    activate(start);
+                }
             };
-            Button edit = AddDialogButton(breakActions, "Edit break", 113, false, editBreak);
-            Button remove = AddDialogButton(breakActions, "Remove break", 136, false, () =>
-            {
-                if (breaks.SelectedRows.Count == 1) breaks.Rows.Remove(breaks.SelectedRows[0]);
-            });
-            edit.Enabled = remove.Enabled = breaks.SelectedRows.Count == 1;
-            breaks.SelectionChanged += (sender, args) => edit.Enabled = remove.Enabled = breaks.SelectedRows.Count == 1;
-            breaks.CellDoubleClick += (sender, args) => { if (args.RowIndex >= 0) editBreak(); };
-            breakActions.Controls.Add(new Label
-            {
-                Text = "Local time", AutoSize = true, ForeColor = Muted,
-                Margin = new Padding(3, 8, 0, 0)
-            });
-            layout.Controls.Add(breakActions, 0, 4);
+            AddDialogButton(breakActions, "Add break", 115, false, () => addBreak(null));
 
-            var feedback = new Label { ForeColor = Color.LightSalmon, Dock = DockStyle.Fill };
-            layout.Controls.Add(feedback, 0, 5);
-            var footer = new FlowLayoutPanel { Dock = DockStyle.Fill };
-            Button save = AddDialogButton(footer, original == null ? "Save shift" : "Save changes", 142, true, () =>
+            amButton = AddDialogButton(periods, "AM", 76, false, () => { pm = false; pending = true; selectTime(); refresh(); });
+            pmButton = AddDialogButton(periods, "PM", 76, false, () => { pm = true; pending = true; selectTime(); refresh(); });
+            string[] labels = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "Clear", "0", "Backspace" };
+            for (int index = 0; index < labels.Length; index++)
+            {
+                string key = labels[index];
+                var button = new Button { Text = key };
+                StyleButton(button, false);
+                button.Margin = new Padding(3);
+                button.Dock = DockStyle.Fill;
+                button.Click += (sender, args) =>
+                {
+                    if (key == "Clear") digits = "";
+                    else if (key == "Backspace" && digits.Length > 0) digits = digits.Substring(0, digits.Length - 1);
+                    else if (key.Length == 1 && digits.Length < 4) digits += key;
+                    pending = true;
+                    selectTime();
+                    refresh();
+                };
+                keys.Controls.Add(button, index % 3, index / 3);
+            }
+            apply = AddDialogButton(applyRow, "Apply time", 128, true, () =>
+            {
+                TimeSpan time;
+                if (!TryReadKeypadTime(digits, target.LocalValue.TimeOfDay, pm, out time))
+                {
+                    feedback.Text = "Enter hours and minutes, such as 815 or 0430.";
+                    return;
+                }
+                pending = false;
+                digits = "";
+                target.SetTime(time);
+                selectTime();
+                refresh();
+            });
+
+            Func<Shift> readShift = () =>
+            {
+                var revised = new Shift { Start = clockIn.ReadUtc().Value, End = clockOutField.ReadUtc() };
+                foreach (var pair in breaks)
+                    revised.Breaks.Add(new Break { Start = pair.Item1.ReadUtc().Value, End = pair.Item2.ReadUtc() });
+                if (employee.Inactive && !revised.End.HasValue)
+                    throw new FormatException("Enter a clock-out time for an inactive employee.");
+                ValidateShift(revised, employee.Shifts.Where((shift, index) => index != shiftIndex));
+                return revised;
+            };
+            refresh = () =>
             {
                 try
                 {
-                    var revised = new Shift { Start = clockIn.ReadUtc().Value, End = clockOutField.ReadUtc() };
-                    foreach (DataGridViewRow row in breaks.Rows) revised.Breaks.Add((Break)row.Tag);
-                    if (employee.Inactive && !revised.End.HasValue)
-                        throw new FormatException("Enter a clock-out time for an inactive employee.");
-                    ValidateShift(revised, employee.Shifts.Where((shift, index) => index != shiftIndex));
+                    Shift revised = readShift();
+                    total.Text = "Worked total   " + Duration(revised.Worked(DateTime.UtcNow));
+                    feedback.Text = pending ? "Apply the keypad entry before saving." : "";
+                    save.Enabled = !pending;
+                }
+                catch (FormatException error)
+                {
+                    total.Text = "Worked total   —";
+                    feedback.Text = error.Message;
+                    save.Enabled = false;
+                }
+            };
+            var footer = new FlowLayoutPanel { Dock = DockStyle.Fill };
+            save = AddDialogButton(footer, original == null ? "Save shift" : "Save changes", 142, true, () =>
+            {
+                try
+                {
+                    Shift revised = readShift();
                     if (SaveChange(records =>
                     {
                         var shifts = records[employeeIndex].Shifts;
@@ -1336,77 +1450,47 @@ internal sealed class TimeClock : Form, IMessageFilter
                     }))
                         dialog.DialogResult = DialogResult.OK;
                 }
-                catch (FormatException error)
-                {
-                    feedback.Text = error.Message;
-                }
+                catch (FormatException error) { feedback.Text = error.Message; }
             });
-            Button cancel = AddDialogButton(footer, "Cancel", 95, false, dialog.Close);
             dialog.AcceptButton = save;
-            dialog.CancelButton = cancel;
-            layout.Controls.Add(footer, 0, 6);
+            dialog.CancelButton = AddDialogButton(footer, "Cancel", 95, false, dialog.Close);
+            layout.Controls.Add(footer, 0, 4);
+            if (original != null)
+                foreach (Break interval in original.Breaks) addBreak(interval);
+            activate(clockOutField.HasTime ? clockOutField : clockIn);
             return dialog.ShowDialog(owner) == DialogResult.OK;
         }
     }
 
-    private static void DisplayBreak(DataGridViewRow row, Break interval)
+    private static bool TryReadKeypadTime(string digits, TimeSpan previous, bool pm, out TimeSpan time)
     {
-        row.Tag = interval;
-        row.Cells[0].Value = LocalTime(interval.Start);
-        row.Cells[1].Value = interval.End.HasValue ? LocalTime(interval.End.Value) : "In progress";
-    }
-
-    private Break ShowBreakEditor(Form owner, Break original, DateTime defaultTime)
-    {
-        using (var dialog = SupervisorDialog(original == null ? "Add break" : "Edit break", 410, 305))
-        {
-            var layout = DialogLayout(dialog, 29, 77, 77, 0, 43);
-            layout.Controls.Add(new Label { Text = "Local time", ForeColor = Muted, Dock = DockStyle.Fill }, 0, 0);
-            var start = new DateTimeSelection("Break start", original == null ? (DateTime?)null : original.Start, defaultTime);
-            var end = new DateTimeSelection("Break end", original == null ? null : original.End, start.LocalValue, () => start.LocalValue);
-            layout.Controls.Add(start, 0, 1);
-            layout.Controls.Add(end, 0, 2);
-            var feedback = new Label { Dock = DockStyle.Fill, ForeColor = Color.LightSalmon };
-            layout.Controls.Add(feedback, 0, 3);
-            var footer = new FlowLayoutPanel { Dock = DockStyle.Fill };
-            Break result = null;
-            dialog.AcceptButton = AddDialogButton(footer, "Save break", 118, true, () =>
-            {
-                try
-                {
-                    DateTime from = start.ReadUtc().Value;
-                    DateTime? until = end.ReadUtc();
-                    if (until < from) throw new FormatException("A break end must be at or after its start.");
-                    result = new Break { Start = from, End = until };
-                    dialog.DialogResult = DialogResult.OK;
-                }
-                catch (FormatException error)
-                {
-                    feedback.Text = error.Message;
-                }
-            });
-            dialog.CancelButton = AddDialogButton(footer, "Cancel", 95, false, dialog.Close);
-            layout.Controls.Add(footer, 0, 4);
-            return dialog.ShowDialog(owner) == DialogResult.OK ? result : null;
-        }
+        int number = digits.Length == 0 ? (previous.Hours % 12 == 0 ? 12 : previous.Hours % 12) * 100 + previous.Minutes : int.Parse(digits, CultureInfo.InvariantCulture);
+        int hour = number / 100;
+        int minute = number % 100;
+        time = TimeSpan.Zero;
+        if (hour < 1 || hour > 12 || minute > 59) return false;
+        time = TimeSpan.FromMinutes((hour % 12 + (pm ? 12 : 0)) * 60 + minute);
+        return true;
     }
 
     private sealed class DateTimeSelection : Panel
     {
-        private readonly string label;
         private readonly DateTime? original;
         private readonly DateTimePicker date = new DateTimePicker();
-        private readonly ComboBox hour = new ComboBox();
-        private readonly ComboBox minute = new ComboBox();
-        private readonly ComboBox period = new ComboBox();
+        private readonly Button time = new Button();
         private readonly CheckBox include;
+        private TimeSpan localTime;
+
+        public readonly string FieldName;
+        public event Action EditTime;
+        public event Action ValueChanged;
 
         public DateTimeSelection(string label, DateTime? original, DateTime defaultTime, Func<DateTime> startTime = null)
         {
-            this.label = label;
+            FieldName = label;
             this.original = original;
-            Size = new Size(337, 70);
-            Margin = new Padding(0, 0, 9, 0);
+            Size = new Size(340, 69);
+            Margin = new Padding(3, 0, 3, 2);
             if (startTime == null)
                 Controls.Add(new Label { Text = label, AutoSize = true, Top = 3 });
             else
@@ -1415,28 +1499,22 @@ internal sealed class TimeClock : Form, IMessageFilter
                 Controls.Add(include);
             }
 
-            var inputs = new FlowLayoutPanel { Location = new Point(0, 26), Size = new Size(337, 39), WrapContents = false };
             date.AccessibleName = label + " date";
             date.Format = DateTimePickerFormat.Custom;
             date.CustomFormat = "MMM d, yyyy";
-            date.Width = 150;
-            date.Margin = new Padding(0, 0, 8, 0);
-            date.CalendarForeColor = Ink;
-            date.CalendarMonthBackground = Surface;
-            inputs.Controls.Add(date);
-            ConfigureTimeDropdown(inputs, hour, label + " hour", 45,
-                Enumerable.Range(1, 12).Select(value => value.ToString(CultureInfo.InvariantCulture)).ToArray());
-            AddTimeSeparator(inputs);
-            ConfigureTimeDropdown(inputs, minute, label + " minute", 49,
-                Enumerable.Range(0, 60).Select(value => value.ToString("00", CultureInfo.InvariantCulture)).ToArray());
-            ConfigureTimeDropdown(inputs, period, label + " AM or PM", 54, new[] { "AM", "PM" });
-            period.Margin = new Padding(5, 0, 0, 0);
-            Controls.Add(inputs);
+            date.SetBounds(0, 34, 150, 30);
+            Controls.Add(date);
+            StyleButton(time, false);
+            time.AccessibleName = label + " time";
+            time.SetBounds(159, 24, 148, 41);
+            Controls.Add(time);
             SetLocalValue(original.HasValue ? original.Value.ToLocalTime() : defaultTime);
+            time.Click += (sender, args) => { if (EditTime != null) EditTime(); };
+            date.ValueChanged += (sender, args) => NotifyChange();
             if (include != null)
             {
                 bool initialized = original.HasValue;
-                inputs.Enabled = include.Checked;
+                date.Enabled = time.Enabled = include.Checked;
                 include.CheckedChanged += (sender, args) =>
                 {
                     if (include.Checked && !initialized)
@@ -1444,58 +1522,43 @@ internal sealed class TimeClock : Form, IMessageFilter
                         SetLocalValue(startTime());
                         initialized = true;
                     }
-                    inputs.Enabled = include.Checked;
+                    date.Enabled = time.Enabled = include.Checked;
+                    NotifyChange();
                 };
             }
         }
 
-        public DateTime LocalValue
+        public bool HasTime { get { return include == null || include.Checked; } }
+        public DateTime LocalValue { get { return date.Value.Date + localTime; } }
+
+        public void SetTime(TimeSpan value)
         {
-            get
-            {
-                int hourOfDay = (hour.SelectedIndex + 1) % 12 + period.SelectedIndex * 12;
-                return date.Value.Date.AddHours(hourOfDay).AddMinutes(minute.SelectedIndex);
-            }
+            localTime = value;
+            time.Text = LocalValue.ToString("h:mm tt", CultureInfo.InvariantCulture);
+            NotifyChange();
         }
 
         public DateTime? ReadUtc()
         {
-            if (include != null && !include.Checked) return null;
+            if (!HasTime) return null;
             DateTime local = DateTime.SpecifyKind(LocalValue, DateTimeKind.Unspecified);
-            if (original.HasValue)
-            {
-                DateTime previous = original.Value.ToLocalTime();
-                if (local.Ticks / TimeSpan.TicksPerMinute == previous.Ticks / TimeSpan.TicksPerMinute) return original;
-            }
+            if (original.HasValue &&
+                local.Ticks / TimeSpan.TicksPerMinute == original.Value.ToLocalTime().Ticks / TimeSpan.TicksPerMinute)
+                return original;
             if (TimeZoneInfo.Local.IsInvalidTime(local) || TimeZoneInfo.Local.IsAmbiguousTime(local))
-                throw new FormatException(label + " falls within a daylight saving clock change.");
+                throw new FormatException(FieldName + " falls within a daylight saving clock change.");
             return local.ToUniversalTime();
         }
 
         private void SetLocalValue(DateTime value)
         {
-            date.Value = value;
-            hour.SelectedIndex = (value.Hour + 11) % 12;
-            minute.SelectedIndex = value.Minute;
-            period.SelectedIndex = value.Hour / 12;
+            date.Value = value.Date;
+            SetTime(TimeSpan.FromMinutes(value.Hour * 60 + value.Minute));
         }
 
-        private static void ConfigureTimeDropdown(FlowLayoutPanel inputs, ComboBox picker, string name, int width, string[] options)
+        private void NotifyChange()
         {
-            picker.AccessibleName = name;
-            picker.Width = width;
-            picker.DropDownStyle = ComboBoxStyle.DropDownList;
-            picker.FlatStyle = FlatStyle.Flat;
-            picker.BackColor = Input;
-            picker.ForeColor = Ink;
-            picker.Margin = new Padding(0);
-            picker.Items.AddRange(options);
-            inputs.Controls.Add(picker);
-        }
-
-        private static void AddTimeSeparator(FlowLayoutPanel inputs)
-        {
-            inputs.Controls.Add(new Label { Text = ":", Width = 10, Height = 27, Margin = new Padding(0), TextAlign = ContentAlignment.MiddleCenter });
+            if (ValueChanged != null) ValueChanged();
         }
     }
 
