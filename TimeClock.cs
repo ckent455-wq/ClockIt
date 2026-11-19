@@ -18,8 +18,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.2.0")]
-[assembly: AssemblyFileVersion("1.0.2.0")]
+[assembly: AssemblyVersion("1.0.3.0")]
+[assembly: AssemblyFileVersion("1.0.3.0")]
 
 public class Employee
 {
@@ -1295,7 +1295,6 @@ internal sealed class TimeClock : Form, IMessageFilter
             var feedback = new Label { Dock = DockStyle.Fill, ForeColor = Color.LightSalmon };
             layout.Controls.Add(feedback, 0, 3);
 
-            var breaks = new List<Tuple<DateTimeSelection, DateTimeSelection>>();
             DateTimeSelection target = null;
             string digits = "";
             bool pm = false;
@@ -1341,39 +1340,6 @@ internal sealed class TimeClock : Form, IMessageFilter
             fields.Controls.Add(clockIn);
             fields.Controls.Add(clockOutField);
 
-            var breakActions = new FlowLayoutPanel { Width = 350, Height = 44, WrapContents = false };
-            fields.Controls.Add(breakActions);
-            Action<Break> addBreak = existing =>
-            {
-                var start = new DateTimeSelection("Break start", existing == null ? (DateTime?)null : existing.Start, clockIn.LocalValue);
-                var end = new DateTimeSelection("Break end", existing == null ? null : existing.End,
-                    start.LocalValue, () => start.LocalValue);
-                var pair = Tuple.Create(start, end);
-                var group = new FlowLayoutPanel { Width = 357, Height = 198, WrapContents = false,
-                    FlowDirection = FlowDirection.TopDown, BackColor = Surface, Margin = new Padding(0, 4, 0, 4) };
-                group.Controls.Add(start);
-                group.Controls.Add(end);
-                var removeRow = new FlowLayoutPanel { Width = 335, Height = 40 };
-                AddDialogButton(removeRow, "Remove break", 135, false, () =>
-                {
-                    breaks.Remove(pair);
-                    if (target == start || target == end) activate(null);
-                    group.Dispose();
-                    refresh();
-                });
-                group.Controls.Add(removeRow);
-                breaks.Add(pair);
-                connect(start);
-                connect(end);
-                fields.Controls.Add(group);
-                if (existing == null)
-                {
-                    fields.ScrollControlIntoView(group);
-                    activate(start);
-                }
-            };
-            AddDialogButton(breakActions, "Add break", 115, false, () => addBreak(null));
-
             amButton = AddDialogButton(periods, "AM", 76, false, () => { pm = false; pending = true; selectTime(); refresh(); });
             pmButton = AddDialogButton(periods, "PM", 76, false, () => { pm = true; pending = true; selectTime(); refresh(); });
             string[] labels = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "Clear", "0", "Backspace" };
@@ -1413,8 +1379,9 @@ internal sealed class TimeClock : Form, IMessageFilter
             Func<Shift> readShift = () =>
             {
                 var revised = new Shift { Start = clockIn.ReadUtc().Value, End = clockOutField.ReadUtc() };
-                foreach (var pair in breaks)
-                    revised.Breaks.Add(new Break { Start = pair.Item1.ReadUtc().Value, End = pair.Item2.ReadUtc() });
+                if (original != null)
+                    foreach (Break interval in original.Breaks)
+                        revised.Breaks.Add(new Break { Start = interval.Start, End = interval.End ?? revised.End });
                 if (employee.Inactive && !revised.End.HasValue)
                     throw new FormatException("Enter a clock-out time for an inactive employee.");
                 ValidateShift(revised, employee.Shifts.Where((shift, index) => index != shiftIndex));
@@ -1455,8 +1422,6 @@ internal sealed class TimeClock : Form, IMessageFilter
             dialog.AcceptButton = save;
             dialog.CancelButton = AddDialogButton(footer, "Cancel", 95, false, dialog.Close);
             layout.Controls.Add(footer, 0, 4);
-            if (original != null)
-                foreach (Break interval in original.Breaks) addBreak(interval);
             activate(clockOutField.HasTime ? clockOutField : clockIn);
             return dialog.ShowDialog(owner) == DialogResult.OK;
         }
@@ -1672,7 +1637,8 @@ internal sealed class TimeClock : Form, IMessageFilter
         {
             var shifts = records[employeeIndex].Shifts;
             var shift = shifts.LastOrDefault(s => !s.End.HasValue);
-            if (finishShift && shift == null) return;
+            if (finishShift != (shift != null))
+                throw new InvalidOperationException("Clock-in status has changed.");
 
             DateTime now = DateTime.UtcNow;
             if (shift == null)
@@ -1687,8 +1653,7 @@ internal sealed class TimeClock : Form, IMessageFilter
             if (now < lastEvent) throw new InvalidOperationException("The Windows clock is earlier than the last punch.");
 
             if (activeBreak != null) activeBreak.End = now;
-            if (finishShift) shift.End = now;
-            else if (activeBreak == null) shift.Breaks.Add(new Break { Start = now });
+            shift.End = now;
         }))
         {
             RefreshEmployee();
@@ -2111,19 +2076,18 @@ internal sealed class TimeClock : Form, IMessageFilter
     {
         Shift shift = ActiveShift;
         DateTime now = DateTime.UtcNow;
-        bool onBreak = shift != null && shift.Breaks.Any(b => !b.End.HasValue);
         status.Text = SelectedEmployee == null ? "Select an employee" :
-            shift == null ? "Clocked out" : onBreak ? "On break" : "Clocked in";
+            shift == null ? "Clocked out" : "Clocked in";
         elapsed.Text = Duration(shift == null ? TimeSpan.Zero : shift.Worked(now));
         details.Text = employees.Count == 0 ? "A supervisor can add employees from the gear menu." :
             shift == null ? "Time worked" :
-            "Time worked   |   Started " + LocalTime(shift.Start) + "   |   Break time " + Duration(shift.BreakTime(now));
+            "Time worked   |   Started " + LocalTime(shift.Start);
         bool hasPin = SelectedEmployee != null && !string.IsNullOrEmpty(SelectedEmployee.PinCredential);
         managePin.Enabled = SelectedEmployee != null;
         if (SelectedEmployee != null && !hasPin)
             details.Text = "Ask a supervisor to set your employee PIN.";
-        punch.Enabled = hasPin;
-        punch.Text = shift == null ? "Clock in" : onBreak ? "End break" : "Start break";
+        punch.Enabled = hasPin && shift == null;
+        punch.Text = "Clock in";
         clockOut.Enabled = hasPin && shift != null;
     }
 
