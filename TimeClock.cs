@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -18,8 +19,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.4.0")]
-[assembly: AssemblyFileVersion("1.0.4.0")]
+[assembly: AssemblyVersion("1.0.5.0")]
+[assembly: AssemblyFileVersion("1.0.5.0")]
 
 public class Employee
 {
@@ -86,6 +87,8 @@ internal sealed class TimeClock : Form, IMessageFilter
     private static readonly Color Ink = Color.FromArgb(237, 243, 249);
     private static readonly Color Muted = Color.FromArgb(169, 184, 200);
     private static readonly Color Accent = Color.FromArgb(100, 222, 200);
+    private static readonly Color ClockInAccent = Color.FromArgb(83, 212, 131);
+    private static readonly Color ClockOutAccent = Color.FromArgb(255, 104, 112);
     private static readonly Color Highlight = Color.FromArgb(30, 82, 84);
     private static readonly XmlSerializer Serializer = new XmlSerializer(typeof(List<Employee>));
 
@@ -101,6 +104,8 @@ internal sealed class TimeClock : Form, IMessageFilter
     private readonly FishbowlClock idleClock = new FishbowlClock();
     private readonly TableLayoutPanel employeeView;
     private readonly TableLayoutPanel pinView;
+    private readonly Label punchConfirmation = new Label();
+    private readonly Stopwatch confirmationTime = new Stopwatch();
     private readonly TextBox employeePin = new TextBox();
     private readonly Label pinMessage = new Label();
     private readonly Label employeeName = new Label();
@@ -110,8 +115,7 @@ internal sealed class TimeClock : Form, IMessageFilter
     private readonly Label status = new Label();
     private readonly Label elapsed = new Label();
     private readonly Label details = new Label();
-    private readonly Button punch = new Button();
-    private readonly Button clockOut = new Button();
+    private readonly Button punch = new PunchButton();
     private readonly ListView history = new ListView();
     private readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
     private List<Employee> employees;
@@ -162,62 +166,55 @@ internal sealed class TimeClock : Form, IMessageFilter
         HandleCreated += (sender, args) => UseDarkCaption(this);
         ForeColor = Ink;
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(28), ColumnCount = 1, RowCount = 5 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(28), ColumnCount = 1, RowCount = 4 };
         employeeView = layout;
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        foreach (int height in new[] { 63, 54, 265, 41 })
+        foreach (int height in new[] { 60, 292, 44 })
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(layout);
 
         var heading = new Panel { Dock = DockStyle.Fill };
-        var header = new Label { Text = AppName, Dock = DockStyle.Fill, Font = new Font("Segoe UI", 25, FontStyle.Bold) };
         var signOut = new Button { Text = "Sign out", Dock = DockStyle.Right };
         StyleButton(signOut, false);
         signOut.Click += (sender, args) => ShowPinScreen();
-        heading.Controls.Add(header);
+        employeeName.Dock = DockStyle.Fill;
+        employeeName.Font = new Font("Segoe UI", 23, FontStyle.Bold);
+        employeeName.AutoEllipsis = true;
+        heading.Controls.Add(employeeName);
         heading.Controls.Add(signOut);
         layout.Controls.Add(heading, 0, 0);
 
-        employeeName.Dock = DockStyle.Fill;
-        employeeName.Font = new Font("Segoe UI", 16, FontStyle.Bold);
-        layout.Controls.Add(employeeName, 0, 1);
-
-        var card = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20, 15, 20, 12),
-            BackColor = Surface, ColumnCount = 1, RowCount = 4 };
+        var card = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(28, 16, 24, 16),
+            BackColor = Surface, ColumnCount = 2, RowCount = 1 };
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        foreach (int height in new[] { 30, 75, 42, 89 })
-            card.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
-        layout.Controls.Add(card, 0, 2);
+        card.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240));
+        card.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.Controls.Add(card, 0, 1);
+
+        var summary = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5 };
+        summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        summary.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        foreach (int height in new[] { 30, 75, 48 })
+            summary.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+        summary.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        card.Controls.Add(summary, 0, 0);
 
         status.Dock = elapsed.Dock = details.Dock = DockStyle.Fill;
-        status.ForeColor = Accent;
         status.Font = new Font("Segoe UI", 12, FontStyle.Bold);
-        elapsed.Font = new Font("Segoe UI", 43, FontStyle.Bold);
+        elapsed.Font = new Font("Segoe UI", 40, FontStyle.Bold);
         details.ForeColor = Muted;
-        card.Controls.Add(status, 0, 0);
-        card.Controls.Add(elapsed, 0, 1);
-        card.Controls.Add(details, 0, 2);
-
-        var actions = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        StyleButton(punch, true);
-        StyleButton(clockOut, false);
-        punch.Dock = clockOut.Dock = DockStyle.Fill;
-        punch.Font = clockOut.Font = new Font("Segoe UI", 17, FontStyle.Bold);
-        punch.Margin = new Padding(0, 2, 8, 7);
-        clockOut.Margin = new Padding(8, 2, 0, 7);
-        punch.Click += (sender, args) => PunchAndSignOut(false);
-        clockOut.Click += (sender, args) => PunchAndSignOut(true);
-        clockOut.Text = "Clock out";
-        actions.Controls.Add(punch, 0, 0);
-        actions.Controls.Add(clockOut, 1, 0);
-        card.Controls.Add(actions, 0, 3);
+        summary.Controls.Add(status, 0, 1);
+        summary.Controls.Add(elapsed, 0, 2);
+        summary.Controls.Add(details, 0, 3);
+        punch.Anchor = AnchorStyles.None;
+        punch.Size = new Size(216, 216);
+        punch.Font = new Font("Segoe UI", 24, FontStyle.Bold);
+        punch.Click += (sender, args) => PunchAndSignOut(ActiveShift != null);
+        card.Controls.Add(punch, 1, 0);
 
         layout.Controls.Add(new Label { Text = "Shift history", Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft,
-            Padding = new Padding(0, 0, 0, 6), Font = new Font("Segoe UI", 13, FontStyle.Bold) }, 0, 3);
+            Padding = new Padding(0, 0, 0, 6), Font = new Font("Segoe UI", 13, FontStyle.Bold) }, 0, 2);
         history.Dock = DockStyle.Fill;
         history.View = View.Details;
         history.BackColor = Surface;
@@ -242,10 +239,17 @@ internal sealed class TimeClock : Form, IMessageFilter
         history.Columns.Add("Clock out");
         history.Columns.Add("Break time");
         history.Columns.Add("Time worked");
-        layout.Controls.Add(history, 0, 4);
+        layout.Controls.Add(history, 0, 3);
 
         pinView = BuildPinScreen();
         Controls.Add(pinView);
+        punchConfirmation.Dock = DockStyle.Fill;
+        punchConfirmation.BackColor = Background;
+        punchConfirmation.Font = new Font("Segoe UI", 34, FontStyle.Bold);
+        punchConfirmation.TextAlign = ContentAlignment.MiddleCenter;
+        punchConfirmation.AccessibleRole = AccessibleRole.Alert;
+        punchConfirmation.Visible = false;
+        Controls.Add(punchConfirmation);
         ConfigureIdleClock();
         ShowPinScreen();
         timer.Interval = 1000;
@@ -307,6 +311,12 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private void UpdateIdleScreen(TimeSpan inactiveFor)
     {
+        if (confirmationTime.IsRunning)
+        {
+            if (confirmationTime.Elapsed >= TimeSpan.FromSeconds(2.5)) ShowPinScreen();
+            return;
+        }
+
         if (idleClock.Visible)
         {
             RefreshIdleClock();
@@ -387,11 +397,11 @@ internal sealed class TimeClock : Form, IMessageFilter
             keypad.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
         foreach (int height in new[] { 36, 50, 34, 60, 60, 60, 60, 60 })
             keypad.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
-        var title = new Label { Text = "Enter employee PIN", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
+        var title = new Label { Text = "Enter your PIN", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
             Font = new Font("Segoe UI", 17, FontStyle.Bold) };
         keypad.Controls.Add(title, 0, 0);
         keypad.SetColumnSpan(title, 3);
-        employeePin.AccessibleName = "Employee PIN";
+        employeePin.AccessibleName = "PIN";
         employeePin.UseSystemPasswordChar = true;
         employeePin.MaxLength = 12;
         employeePin.TextAlign = HorizontalAlignment.Center;
@@ -454,6 +464,8 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private void ShowPinScreen()
     {
+        confirmationTime.Reset();
+        punchConfirmation.Visible = false;
         selectedEmployeeIndex = -1;
         employeePin.Clear();
         pinMessage.Text = "";
@@ -484,6 +496,46 @@ internal sealed class TimeClock : Form, IMessageFilter
         button.FlatAppearance.BorderColor = primary ? Accent : Border;
         button.UseVisualStyleBackColor = false;
         button.Font = new Font("Segoe UI", 11, FontStyle.Bold);
+    }
+
+    private sealed class PunchButton : Button
+    {
+        public PunchButton()
+        {
+            FlatStyle = FlatStyle.Flat;
+            Cursor = Cursors.Hand;
+            DoubleBuffered = true;
+        }
+
+        protected override void OnSizeChanged(EventArgs args)
+        {
+            base.OnSizeChanged(args);
+            if (ClientSize.Width == 0 || ClientSize.Height == 0) return;
+            using (var outline = new GraphicsPath())
+            {
+                outline.AddEllipse(ClientRectangle);
+                Region = new Region(outline);
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs args)
+        {
+            var bounds = ClientRectangle;
+            bounds.Inflate(-2, -2);
+            args.Graphics.Clear(Surface);
+            args.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            Color fill = Enabled ? BackColor : Input;
+            using (var brush = new SolidBrush(fill))
+                args.Graphics.FillEllipse(brush, bounds);
+            if (Focused)
+            {
+                bounds.Inflate(-7, -7);
+                using (var ring = new Pen(ForeColor, 2))
+                    args.Graphics.DrawEllipse(ring, bounds);
+            }
+            TextRenderer.DrawText(args.Graphics, Text, Font, ClientRectangle, Enabled ? ForeColor : Muted,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        }
     }
 
     private void ResizeHistory()
@@ -1687,7 +1739,7 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private bool MatchesSupervisorPin(string pin)
     {
-        return File.Exists(supervisorPath) && MatchesFourDigitPin(File.ReadAllText(supervisorPath), pin);
+        return File.Exists(supervisorPath) && MatchesPin(File.ReadAllText(supervisorPath), pin);
     }
 
     private static bool MatchesFourDigitPin(string credential, string pin)
@@ -1726,6 +1778,14 @@ internal sealed class TimeClock : Form, IMessageFilter
         pinMessage.Text = PinRetryMessage(now);
         if (!string.IsNullOrEmpty(pinMessage.Text)) return;
 
+        if (MatchesSupervisorPin(pin))
+        {
+            failedAttempts = 0;
+            ShowSupervisorPanel();
+            if (!IsDisposed) ShowPinScreen();
+            return;
+        }
+
         int match = -1;
         for (int index = 0; index < employees.Count; index++)
         {
@@ -1750,7 +1810,7 @@ internal sealed class TimeClock : Form, IMessageFilter
         pinView.Visible = false;
         employeeView.Visible = true;
         employeeView.BringToFront();
-        (ActiveShift == null ? punch : clockOut).Focus();
+        punch.Focus();
         inactivity.Restart();
     }
 
@@ -1788,8 +1848,13 @@ internal sealed class TimeClock : Form, IMessageFilter
             shift.End = now;
         })) return;
 
-        ShowPinScreen();
-        pinMessage.Text = finishShift ? "Clocked out." : "Clocked in.";
+        selectedEmployeeIndex = -1;
+        employeeView.Visible = false;
+        punchConfirmation.Text = finishShift ? "Clocked out successfully" : "Clocked in successfully";
+        punchConfirmation.ForeColor = finishShift ? ClockOutAccent : ClockInAccent;
+        punchConfirmation.Visible = true;
+        punchConfirmation.BringToFront();
+        confirmationTime.Restart();
     }
 
     private bool ShowPinDialog(string title, string instructions, bool create, bool includeName,
@@ -2228,9 +2293,11 @@ internal sealed class TimeClock : Form, IMessageFilter
         details.Text = shift == null ? "Time worked" :
             "Time worked   |   Started " + LocalTime(shift.Start);
         bool hasPin = SelectedEmployee != null && !string.IsNullOrEmpty(SelectedEmployee.PinCredential);
-        punch.Enabled = hasPin && shift == null;
-        punch.Text = "Clock in";
-        clockOut.Enabled = hasPin && shift != null;
+        punch.Enabled = hasPin;
+        punch.Text = shift == null ? "Clock In" : "Clock Out";
+        punch.BackColor = shift == null ? ClockInAccent : ClockOutAccent;
+        punch.ForeColor = Background;
+        status.ForeColor = shift == null ? Muted : Accent;
     }
 
     private static string LocalTime(DateTime utc)

@@ -1,10 +1,10 @@
 # ClockIt!
 
-ClockIt! is a native Windows desktop time clock for a shared workstation or tablet. Employees enter their PIN to open their clock-in screen. After they clock in or out, the app returns to the PIN pad.
+ClockIt! is a native Windows desktop time clock for a shared workstation or tablet. Employees enter their PIN to open their clock-in screen, then tap the green **Clock In** or red **Clock Out** button. The app confirms the punch before returning to the PIN pad.
 
 ## Run ClockIt!
 
-Download the Windows executable from [Releases](../../releases) and open it. On first launch, the person setting up the workstation creates a private four-digit supervisor PIN. Select the gear in the bottom-right corner of the PIN screen and enter the supervisor PIN to add employees and set their PINs.
+Download the Windows executable from [Releases](../../releases) and open it. On first launch, the person setting up the workstation creates a private four-digit supervisor PIN. Enter that PIN on the main PIN pad to open the supervisor menu, or select the gear in the bottom-right corner to open a dedicated supervisor PIN prompt.
 
 The supervisor panel lets you review timesheets, add or correct shifts, and delete mistaken entries. **Weekly export** previews completed shifts and employee totals, flags open shifts, and lets you save a CSV. A supervisor can also edit a shift directly from the preview.
 
