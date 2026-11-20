@@ -19,8 +19,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.7.0")]
-[assembly: AssemblyFileVersion("1.0.7.0")]
+[assembly: AssemblyVersion("1.0.8.0")]
+[assembly: AssemblyFileVersion("1.0.8.0")]
 
 public class Employee
 {
@@ -114,6 +114,7 @@ internal sealed class TimeClock : Form, IMessageFilter
     private int selectedEmployeeIndex = -1;
     private int failedAttempts;
     private DateTime retryAfter;
+    private bool checkingPin;
     private readonly Label status = new Label();
     private readonly Label elapsed = new Label();
     private readonly Label details = new Label();
@@ -327,6 +328,8 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private void UpdateIdleScreen(TimeSpan inactiveFor)
     {
+        if (checkingPin) return;
+
         if (confirmationTime.IsRunning)
         {
             if (confirmationTime.Elapsed >= TimeSpan.FromSeconds(2.5)) ShowPinScreen();
@@ -432,11 +435,11 @@ internal sealed class TimeClock : Form, IMessageFilter
             if (!char.IsControl(args.KeyChar) && (args.KeyChar < '0' || args.KeyChar > '9'))
                 args.Handled = true;
         };
-        employeePin.KeyDown += (sender, args) =>
+        employeePin.KeyDown += async (sender, args) =>
         {
             if (args.KeyCode != Keys.Enter) return;
             args.SuppressKeyPress = true;
-            SubmitEmployeePin();
+            await SubmitEmployeePin();
         };
         keypad.Controls.Add(employeePin, 0, 1);
         keypad.SetColumnSpan(employeePin, 3);
@@ -473,7 +476,7 @@ internal sealed class TimeClock : Form, IMessageFilter
         StyleButton(enter, true);
         enter.Dock = DockStyle.Fill;
         enter.Margin = new Padding(4);
-        enter.Click += (sender, args) => SubmitEmployeePin();
+        enter.Click += async (sender, args) => await SubmitEmployeePin();
         keypad.Controls.Add(enter, 0, 7);
         keypad.SetColumnSpan(enter, 3);
         screen.Controls.Add(keypad, 0, 1);
@@ -1808,8 +1811,9 @@ internal sealed class TimeClock : Form, IMessageFilter
             .Any(employee => MatchesFourDigitPin(employee.PinCredential, pin));
     }
 
-    private void SubmitEmployeePin()
+    private async Task SubmitEmployeePin()
     {
+        if (checkingPin) return;
         inactivity.Restart();
         string pin = employeePin.Text;
         employeePin.Clear();
@@ -1820,8 +1824,37 @@ internal sealed class TimeClock : Form, IMessageFilter
         pinMessage.Text = PinRetryMessage(now);
         if (!string.IsNullOrEmpty(pinMessage.Text)) return;
 
+        checkingPin = true;
+        pinView.Enabled = false;
+        pinMessage.Text = "Checking PIN…";
+        List<Employee> roster = employees;
+        bool supervisor;
+        int[] employeeMatches;
+        try
+        {
+            supervisor = await Task.Run(() => MatchesSupervisorPin(pin));
+            employeeMatches = supervisor ? new int[0] : await Task.Run(() => FindEmployeePinMatches(roster, pin));
+        }
+        catch (Exception)
+        {
+            if (!IsDisposed) pinMessage.Text = "Could not check the PIN. Try again.";
+            return;
+        }
+        finally
+        {
+            checkingPin = false;
+            if (!IsDisposed)
+            {
+                pinView.Enabled = true;
+                employeePin.Focus();
+                inactivity.Restart();
+            }
+        }
+        if (IsDisposed) return;
+        pinMessage.Text = "";
+
         int match;
-        if (MatchesSupervisorPin(pin))
+        if (supervisor)
         {
             failedAttempts = 0;
             match = employees.FindIndex(employee => employee.IsSupervisor);
@@ -1840,23 +1873,17 @@ internal sealed class TimeClock : Form, IMessageFilter
         }
         else
         {
-            match = -1;
-            for (int index = 0; index < employees.Count; index++)
+            if (employeeMatches.Length > 1)
             {
-                Employee employee = employees[index];
-                if (employee.IsSupervisor || employee.Inactive || !MatchesPin(employee.PinCredential, pin)) continue;
-                if (match >= 0)
-                {
-                    pinMessage.Text = "Ask a supervisor to reset your PIN.";
-                    return;
-                }
-                match = index;
+                pinMessage.Text = "Ask a supervisor to reset your PIN.";
+                return;
             }
-            if (match < 0)
+            if (employeeMatches.Length == 0)
             {
                 pinMessage.Text = RecordFailedPinAttempt(DateTime.UtcNow);
                 return;
             }
+            match = employeeMatches[0];
         }
 
         failedAttempts = 0;
@@ -1867,6 +1894,14 @@ internal sealed class TimeClock : Form, IMessageFilter
         employeeView.BringToFront();
         punch.Focus();
         inactivity.Restart();
+    }
+
+    private static int[] FindEmployeePinMatches(List<Employee> roster, string pin)
+    {
+        int workers = Math.Max(1, Math.Min(4, Environment.ProcessorCount - 1));
+        return Enumerable.Range(0, roster.Count).AsParallel().WithDegreeOfParallelism(workers)
+            .Where(index => !roster[index].IsSupervisor && !roster[index].Inactive && MatchesPin(roster[index].PinCredential, pin))
+            .Take(2).ToArray();
     }
 
     private void PunchAndSignOut(bool finishShift)
