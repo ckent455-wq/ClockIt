@@ -19,8 +19,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.5.0")]
-[assembly: AssemblyFileVersion("1.0.5.0")]
+[assembly: AssemblyVersion("1.0.6.0")]
+[assembly: AssemblyFileVersion("1.0.6.0")]
 
 public class Employee
 {
@@ -115,6 +115,7 @@ internal sealed class TimeClock : Form, IMessageFilter
     private readonly Label status = new Label();
     private readonly Label elapsed = new Label();
     private readonly Label details = new Label();
+    private readonly Label weeklyHours = new Label();
     private readonly Button punch = new PunchButton();
     private readonly ListView history = new ListView();
     private readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
@@ -192,10 +193,10 @@ internal sealed class TimeClock : Form, IMessageFilter
         card.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.Controls.Add(card, 0, 1);
 
-        var summary = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5 };
+        var summary = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6 };
         summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         summary.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        foreach (int height in new[] { 30, 75, 48 })
+        foreach (int height in new[] { 30, 75, 38, 36 })
             summary.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         summary.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         card.Controls.Add(summary, 0, 0);
@@ -207,6 +208,9 @@ internal sealed class TimeClock : Form, IMessageFilter
         summary.Controls.Add(status, 0, 1);
         summary.Controls.Add(elapsed, 0, 2);
         summary.Controls.Add(details, 0, 3);
+        weeklyHours.Dock = DockStyle.Fill;
+        weeklyHours.Font = new Font("Segoe UI", 13, FontStyle.Bold);
+        summary.Controls.Add(weeklyHours, 0, 4);
         punch.Anchor = AnchorStyles.None;
         punch.Size = new Size(216, 216);
         punch.Font = new Font("Segoe UI", 24, FontStyle.Bold);
@@ -904,7 +908,7 @@ internal sealed class TimeClock : Form, IMessageFilter
             {
                 AccessibleName = "Week starting", Format = DateTimePickerFormat.Custom,
                 CustomFormat = "dddd, MMM d, yyyy", Width = 244, MaxDate = today,
-                Value = today.AddDays(-((int)today.DayOfWeek + 6) % 7)
+                Value = StartOfWeek(today)
             };
             period.Controls.Add(weekStart);
             var dates = new Label { AutoSize = true, ForeColor = Muted, Margin = new Padding(10, 6, 0, 0) };
@@ -1335,9 +1339,7 @@ internal sealed class TimeClock : Form, IMessageFilter
                 DateTime to = shift.End.Value > end ? end : shift.End.Value;
                 if (to < from) continue;
                 TimeSpan gross = to - from;
-                long breakTicks = shift.Breaks.Sum(interval =>
-                    OverlapTicks(from, to, interval.Start, interval.End ?? shift.End.Value));
-                TimeSpan unpaid = TimeSpan.FromTicks(Math.Min(gross.Ticks, breakTicks));
+                TimeSpan unpaid = UnpaidTime(shift, from, to, shift.End.Value);
                 TimeSpan worked = gross - unpaid;
                 total.BreakTime += unpaid;
                 total.WorkedTime += worked;
@@ -1357,6 +1359,31 @@ internal sealed class TimeClock : Form, IMessageFilter
         DateTime overlapStart = from > intervalStart ? from : intervalStart;
         DateTime overlapEnd = to < intervalEnd ? to : intervalEnd;
         return Math.Max(0, (overlapEnd - overlapStart).Ticks);
+    }
+
+    private static TimeSpan UnpaidTime(Shift shift, DateTime from, DateTime to, DateTime shiftEnd)
+    {
+        long breakTicks = shift.Breaks.Sum(interval => OverlapTicks(from, to, interval.Start, interval.End ?? shiftEnd));
+        return TimeSpan.FromTicks(Math.Min((to - from).Ticks, breakTicks));
+    }
+
+    private static DateTime StartOfWeek(DateTime localTime)
+    {
+        return localTime.Date.AddDays(-((int)localTime.DayOfWeek + 6) % 7);
+    }
+
+    private static TimeSpan WorkedThisWeek(Employee employee, DateTime now)
+    {
+        DateTime start = StartOfWeek(now.ToLocalTime()).ToUniversalTime();
+        TimeSpan total = TimeSpan.Zero;
+        foreach (Shift shift in employee.Shifts)
+        {
+            DateTime shiftEnd = shift.End ?? now;
+            DateTime from = shift.Start < start ? start : shift.Start;
+            DateTime to = shiftEnd > now ? now : shiftEnd;
+            if (to > from) total += to - from - UnpaidTime(shift, from, to, shiftEnd);
+        }
+        return total;
     }
 
     private static string PayrollTime(DateTime utc)
@@ -2285,14 +2312,16 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private void RefreshClock()
     {
+        Employee employee = SelectedEmployee;
         Shift shift = ActiveShift;
         DateTime now = DateTime.UtcNow;
-        employeeName.Text = SelectedEmployee == null ? "" : SelectedEmployee.Name;
+        employeeName.Text = employee == null ? "" : employee.Name;
         status.Text = shift == null ? "Clocked out" : "Clocked in";
         elapsed.Text = Duration(shift == null ? TimeSpan.Zero : shift.Worked(now));
         details.Text = shift == null ? "Time worked" :
             "Time worked   |   Started " + LocalTime(shift.Start);
-        bool hasPin = SelectedEmployee != null && !string.IsNullOrEmpty(SelectedEmployee.PinCredential);
+        weeklyHours.Text = employee == null ? "" : "This week (Mon–Sun)   " + Duration(WorkedThisWeek(employee, now));
+        bool hasPin = employee != null && !string.IsNullOrEmpty(employee.PinCredential);
         punch.Enabled = hasPin;
         punch.Text = shift == null ? "Clock In" : "Clock Out";
         punch.BackColor = shift == null ? ClockInAccent : ClockOutAccent;
