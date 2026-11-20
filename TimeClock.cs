@@ -19,8 +19,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.8.0")]
-[assembly: AssemblyFileVersion("1.0.8.0")]
+[assembly: AssemblyVersion("1.0.9.0")]
+[assembly: AssemblyFileVersion("1.0.9.0")]
 
 public class Employee
 {
@@ -95,6 +95,16 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr handle, int attribute, ref int value, int size);
+
+    [DllImport("bcrypt.dll", CharSet = CharSet.Unicode)]
+    private static extern int BCryptOpenAlgorithmProvider(out IntPtr handle, string algorithm, string implementation, uint flags);
+
+    [DllImport("bcrypt.dll")]
+    private static extern int BCryptDeriveKeyPBKDF2(IntPtr handle, byte[] password, int passwordLength,
+        byte[] salt, int saltLength, ulong iterations, [Out] byte[] output, int outputLength, uint flags);
+
+    [DllImport("bcrypt.dll")]
+    private static extern int BCryptCloseAlgorithmProvider(IntPtr handle, uint flags);
 
     private readonly string dataPath;
     private readonly string supervisorPath;
@@ -2308,8 +2318,28 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private static byte[] DerivePin(string pin, byte[] salt)
     {
-        using (var derivation = new Rfc2898DeriveBytes(pin, salt, 600000, HashAlgorithmName.SHA256))
-            return derivation.GetBytes(32);
+        const uint BcryptAlgHandleHmacFlag = 8;
+        const int iterations = 600000;
+        const int hashLength = 32;
+        IntPtr provider;
+        if (BCryptOpenAlgorithmProvider(out provider, "SHA256", null, BcryptAlgHandleHmacFlag) == 0)
+        {
+            byte[] password = Encoding.UTF8.GetBytes(pin);
+            try
+            {
+                var hash = new byte[hashLength];
+                if (BCryptDeriveKeyPBKDF2(provider, password, password.Length, salt, salt.Length,
+                    iterations, hash, hash.Length, 0) == 0)
+                    return hash;
+            }
+            finally
+            {
+                Array.Clear(password, 0, password.Length);
+                BCryptCloseAlgorithmProvider(provider, 0);
+            }
+        }
+        using (var derivation = new Rfc2898DeriveBytes(pin, salt, iterations, HashAlgorithmName.SHA256))
+            return derivation.GetBytes(hashLength);
     }
 
     private static void WriteAtomically(string path, Action<Stream> write)
