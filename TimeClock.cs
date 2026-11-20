@@ -19,8 +19,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.9.0")]
-[assembly: AssemblyFileVersion("1.0.9.0")]
+[assembly: AssemblyVersion("1.0.10.0")]
+[assembly: AssemblyFileVersion("1.0.10.0")]
 
 public class Employee
 {
@@ -132,6 +132,9 @@ internal sealed class TimeClock : Form, IMessageFilter
     private readonly Button punch = new PunchButton();
     private readonly ListView history = new ListView();
     private readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
+    private readonly byte[] pinLookupKey = RandomBytes(32);
+    private readonly Dictionary<string, int> knownEmployeePins = new Dictionary<string, int>();
+    private string lastSupervisorCredential;
     private List<Employee> employees;
 
     [STAThread]
@@ -1794,7 +1797,12 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private bool MatchesSupervisorPin(string pin)
     {
-        return File.Exists(supervisorPath) && MatchesPin(File.ReadAllText(supervisorPath), pin);
+        return MatchesPin(ReadSupervisorCredential(), pin);
+    }
+
+    private string ReadSupervisorCredential()
+    {
+        return File.Exists(supervisorPath) ? File.ReadAllText(supervisorPath) : null;
     }
 
     private static bool MatchesFourDigitPin(string credential, string pin)
@@ -1838,12 +1846,10 @@ internal sealed class TimeClock : Form, IMessageFilter
         pinView.Enabled = false;
         pinMessage.Text = "Checking PIN…";
         List<Employee> roster = employees;
-        bool supervisor;
-        int[] employeeMatches;
+        Tuple<bool, int[]> result;
         try
         {
-            supervisor = await Task.Run(() => MatchesSupervisorPin(pin));
-            employeeMatches = supervisor ? new int[0] : await Task.Run(() => FindEmployeePinMatches(roster, pin));
+            result = await Task.Run(() => CheckSignInPin(roster, pin));
         }
         catch (Exception)
         {
@@ -1864,7 +1870,7 @@ internal sealed class TimeClock : Form, IMessageFilter
         pinMessage.Text = "";
 
         int match;
-        if (supervisor)
+        if (result.Item1)
         {
             failedAttempts = 0;
             match = employees.FindIndex(employee => employee.IsSupervisor);
@@ -1883,6 +1889,7 @@ internal sealed class TimeClock : Form, IMessageFilter
         }
         else
         {
+            int[] employeeMatches = result.Item2;
             if (employeeMatches.Length > 1)
             {
                 pinMessage.Text = "Ask a supervisor to reset your PIN.";
@@ -1904,6 +1911,37 @@ internal sealed class TimeClock : Form, IMessageFilter
         employeeView.BringToFront();
         punch.Focus();
         inactivity.Restart();
+    }
+
+    private Tuple<bool, int[]> CheckSignInPin(List<Employee> roster, string pin)
+    {
+        string supervisorCredential = ReadSupervisorCredential();
+        if (supervisorCredential != lastSupervisorCredential)
+        {
+            knownEmployeePins.Clear();
+            lastSupervisorCredential = supervisorCredential;
+        }
+
+        string lookup;
+        using (var hmac = new HMACSHA256(pinLookupKey))
+        {
+            byte[] password = Encoding.UTF8.GetBytes(pin);
+            try { lookup = Convert.ToBase64String(hmac.ComputeHash(password)); }
+            finally { Array.Clear(password, 0, password.Length); }
+        }
+
+        // The lookup only narrows the search. The stored, salted PIN hash still authorizes every sign-in.
+        int index;
+        if (knownEmployeePins.TryGetValue(lookup, out index) &&
+            MatchesPin(roster[index].PinCredential, pin))
+            return Tuple.Create(false, new[] { index });
+
+        if (MatchesPin(supervisorCredential, pin))
+            return Tuple.Create(true, new int[0]);
+
+        int[] matches = FindEmployeePinMatches(roster, pin);
+        if (matches.Length == 1) knownEmployeePins[lookup] = matches[0];
+        return Tuple.Create(false, matches);
     }
 
     private static int[] FindEmployeePinMatches(List<Employee> roster, string pin)
@@ -2297,9 +2335,15 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private static string CreateCredential(string pin)
     {
-        var salt = new byte[16];
-        using (var random = RandomNumberGenerator.Create()) random.GetBytes(salt);
+        byte[] salt = RandomBytes(16);
         return "4:" + Convert.ToBase64String(salt) + ":" + Convert.ToBase64String(DerivePin(pin, salt));
+    }
+
+    private static byte[] RandomBytes(int length)
+    {
+        var bytes = new byte[length];
+        using (var random = RandomNumberGenerator.Create()) random.GetBytes(bytes);
+        return bytes;
     }
 
     private static bool VerifyCredential(string credential, string pin)
@@ -2376,6 +2420,12 @@ internal sealed class TimeClock : Form, IMessageFilter
             var records = File.Exists(dataPath) ? ReadRecords() : new List<Employee>();
             change(records);
             WriteAtomically(dataPath, stream => Serializer.Serialize(stream, records));
+            if (knownEmployeePins.Count > 0 && (records.Count != employees.Count ||
+                records.Where((employee, index) => employee.Name != employees[index].Name ||
+                    employee.PinCredential != employees[index].PinCredential ||
+                    employee.Inactive != employees[index].Inactive ||
+                    employee.IsSupervisor != employees[index].IsSupervisor).Any()))
+                knownEmployeePins.Clear();
             employees = records;
             return true;
         }
