@@ -18,8 +18,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.3.0")]
-[assembly: AssemblyFileVersion("1.0.3.0")]
+[assembly: AssemblyVersion("1.0.4.0")]
+[assembly: AssemblyFileVersion("1.0.4.0")]
 
 public class Employee
 {
@@ -100,11 +100,13 @@ internal sealed class TimeClock : Form, IMessageFilter
     private bool manualUpdateChecked;
     private readonly FishbowlClock idleClock = new FishbowlClock();
     private readonly TableLayoutPanel employeeView;
-    private readonly Button managePin = new Button { Text = "Set employee PIN" };
+    private readonly TableLayoutPanel pinView;
+    private readonly TextBox employeePin = new TextBox();
+    private readonly Label pinMessage = new Label();
+    private readonly Label employeeName = new Label();
+    private int selectedEmployeeIndex = -1;
     private int failedAttempts;
     private DateTime retryAfter;
-    private readonly ComboBox people = new ComboBox();
-    private readonly List<int> activeEmployeeIndexes = new List<int>();
     private readonly Label status = new Label();
     private readonly Label elapsed = new Label();
     private readonly Label details = new Label();
@@ -170,22 +172,16 @@ internal sealed class TimeClock : Form, IMessageFilter
 
         var heading = new Panel { Dock = DockStyle.Fill };
         var header = new Label { Text = AppName, Dock = DockStyle.Fill, Font = new Font("Segoe UI", 25, FontStyle.Bold) };
-        var settings = new Button { Text = "\u2699", AccessibleName = "Supervisor settings", Dock = DockStyle.Right };
-        StyleButton(settings, false);
-        settings.Width = 52;
-        settings.Font = new Font("Segoe UI Symbol", 20);
-        settings.Click += (sender, args) => OpenSupervisor();
-        var settingsHost = new Panel { Dock = DockStyle.Right, Width = 52, Padding = new Padding(0, 2, 0, 9) };
-        settingsHost.Controls.Add(settings);
+        var signOut = new Button { Text = "Sign out", Dock = DockStyle.Right };
+        StyleButton(signOut, false);
+        signOut.Click += (sender, args) => ShowPinScreen();
         heading.Controls.Add(header);
-        heading.Controls.Add(settingsHost);
+        heading.Controls.Add(signOut);
         layout.Controls.Add(heading, 0, 0);
 
-        var selection = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        selection.Controls.Add(new Label { Text = "Employee", AutoSize = true, Margin = new Padding(0, 8, 10, 0) });
-        ConfigureEmployeePicker(people);
-        selection.Controls.Add(people);
-        layout.Controls.Add(selection, 0, 1);
+        employeeName.Dock = DockStyle.Fill;
+        employeeName.Font = new Font("Segoe UI", 16, FontStyle.Bold);
+        layout.Controls.Add(employeeName, 0, 1);
 
         var card = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20, 15, 20, 12),
             BackColor = Surface, ColumnCount = 1, RowCount = 4 };
@@ -213,8 +209,8 @@ internal sealed class TimeClock : Form, IMessageFilter
         punch.Font = clockOut.Font = new Font("Segoe UI", 17, FontStyle.Bold);
         punch.Margin = new Padding(0, 2, 8, 7);
         clockOut.Margin = new Padding(8, 2, 0, 7);
-        punch.Click += (sender, args) => PromptForPunch(false);
-        clockOut.Click += (sender, args) => PromptForPunch(true);
+        punch.Click += (sender, args) => PunchAndSignOut(false);
+        clockOut.Click += (sender, args) => PunchAndSignOut(true);
         clockOut.Text = "Clock out";
         actions.Controls.Add(punch, 0, 0);
         actions.Controls.Add(clockOut, 1, 0);
@@ -248,15 +244,17 @@ internal sealed class TimeClock : Form, IMessageFilter
         history.Columns.Add("Time worked");
         layout.Controls.Add(history, 0, 4);
 
+        pinView = BuildPinScreen();
+        Controls.Add(pinView);
         ConfigureIdleClock();
-        people.SelectedIndexChanged += (sender, args) => RefreshEmployee();
-        PopulateEmployees(-1);
+        ShowPinScreen();
         timer.Interval = 1000;
         timer.Tick += (sender, args) => UpdateIdleScreen(inactivity.Elapsed);
         timer.Start();
         Activated += (sender, args) => inactivity.Restart();
         Shown += async (sender, args) =>
         {
+            employeePin.Focus();
             Application.AddMessageFilter(this);
             RunFirstTimeSetup();
             if (!IsDisposed && !manualUpdateChecked) await CheckForStartupUpdateAsync();
@@ -311,12 +309,12 @@ internal sealed class TimeClock : Form, IMessageFilter
     {
         if (idleClock.Visible)
         {
-            idleClock.Text = DateTime.Now.ToString("h:mm tt", CultureInfo.InvariantCulture);
+            RefreshIdleClock();
             return;
         }
 
-        if (startupUpdate != null && ActiveForm == this && people.SelectedIndex < 0 &&
-            !people.DroppedDown && CanShowIdleScreen())
+        if (startupUpdate != null && ActiveForm == this && selectedEmployeeIndex < 0 &&
+            employeePin.TextLength == 0 && CanShowIdleScreen())
         {
             ClockItUpdater.Update update = startupUpdate;
             startupUpdate = null;
@@ -326,9 +324,12 @@ internal sealed class TimeClock : Form, IMessageFilter
 
         if (inactiveFor >= IdleDelay && CanShowIdleScreen())
         {
-            people.SelectedIndex = -1;
-            idleClock.Text = DateTime.Now.ToString("h:mm tt", CultureInfo.InvariantCulture);
+            selectedEmployeeIndex = -1;
+            employeePin.Clear();
+            pinMessage.Text = "";
+            RefreshIdleClock();
             employeeView.Visible = false;
+            pinView.Visible = false;
             idleClock.Visible = true;
             idleClock.BringToFront();
             idleClock.Focus();
@@ -336,6 +337,12 @@ internal sealed class TimeClock : Form, IMessageFilter
         }
 
         RefreshClock();
+    }
+
+    private void RefreshIdleClock()
+    {
+        idleClock.FishCount = employees.Count(employee => employee.Shifts.Any(shift => !shift.End.HasValue));
+        idleClock.Text = DateTime.Now.ToString("h:mm tt", CultureInfo.InvariantCulture);
     }
 
     private bool CanShowIdleScreen()
@@ -346,20 +353,120 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private void DismissIdleClock()
     {
-        inactivity.Restart();
         idleClock.Visible = false;
-        employeeView.Visible = true;
-        people.Focus();
+        ShowPinScreen();
     }
 
-    private int SelectedEmployeeIndex
+    private TableLayoutPanel BuildPinScreen()
     {
-        get { return people.SelectedIndex < 0 ? -1 : activeEmployeeIndexes[people.SelectedIndex]; }
+        var screen = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(28, 16, 28, 16), ColumnCount = 1, RowCount = 3 };
+        screen.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        screen.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        screen.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        screen.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        screen.Controls.Add(new Label { Text = AppName, Dock = DockStyle.Fill, Font = new Font("Segoe UI", 25, FontStyle.Bold) }, 0, 0);
+        var settings = new Button { Text = "\u2699", AccessibleName = "Supervisor settings", Dock = DockStyle.Right };
+        StyleButton(settings, false);
+        settings.Width = 52;
+        settings.Font = new Font("Segoe UI Symbol", 20);
+        settings.TabIndex = 1;
+        settings.Click += (sender, args) =>
+        {
+            employeePin.Clear();
+            pinMessage.Text = "";
+            OpenSupervisor();
+            inactivity.Restart();
+            employeePin.Focus();
+        };
+        var footer = new Panel { Dock = DockStyle.Fill, TabIndex = 2 };
+        footer.Controls.Add(settings);
+        screen.Controls.Add(footer, 0, 2);
+
+        var keypad = new TableLayoutPanel { Anchor = AnchorStyles.None, Size = new Size(340, 420), ColumnCount = 3, RowCount = 8, TabIndex = 1 };
+        for (int column = 0; column < 3; column++)
+            keypad.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        foreach (int height in new[] { 36, 50, 34, 60, 60, 60, 60, 60 })
+            keypad.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+        var title = new Label { Text = "Enter employee PIN", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
+            Font = new Font("Segoe UI", 17, FontStyle.Bold) };
+        keypad.Controls.Add(title, 0, 0);
+        keypad.SetColumnSpan(title, 3);
+        employeePin.AccessibleName = "Employee PIN";
+        employeePin.UseSystemPasswordChar = true;
+        employeePin.MaxLength = 12;
+        employeePin.TextAlign = HorizontalAlignment.Center;
+        employeePin.Font = new Font("Segoe UI", 22);
+        employeePin.BackColor = Input;
+        employeePin.ForeColor = Ink;
+        employeePin.Dock = DockStyle.Fill;
+        employeePin.KeyPress += (sender, args) =>
+        {
+            if (!char.IsControl(args.KeyChar) && (args.KeyChar < '0' || args.KeyChar > '9'))
+                args.Handled = true;
+        };
+        employeePin.KeyDown += (sender, args) =>
+        {
+            if (args.KeyCode != Keys.Enter) return;
+            args.SuppressKeyPress = true;
+            SubmitEmployeePin();
+        };
+        keypad.Controls.Add(employeePin, 0, 1);
+        keypad.SetColumnSpan(employeePin, 3);
+        pinMessage.Dock = DockStyle.Fill;
+        pinMessage.TextAlign = ContentAlignment.MiddleCenter;
+        pinMessage.ForeColor = Accent;
+        keypad.Controls.Add(pinMessage, 0, 2);
+        keypad.SetColumnSpan(pinMessage, 3);
+
+        for (int index = 0; index < 12; index++)
+        {
+            string key = index < 9 ? (index + 1).ToString(CultureInfo.InvariantCulture) :
+                index == 9 ? "Clear" : index == 10 ? "0" : "Delete";
+            var button = new Button { Text = key };
+            StyleButton(button, false);
+            button.Dock = DockStyle.Fill;
+            button.Margin = new Padding(4);
+            button.Font = new Font("Segoe UI", 16, FontStyle.Bold);
+            button.Click += (sender, args) =>
+            {
+                if (key == "Clear") employeePin.Clear();
+                else if (key == "Delete")
+                {
+                    if (employeePin.TextLength > 0)
+                        employeePin.Text = employeePin.Text.Substring(0, employeePin.TextLength - 1);
+                }
+                else if (employeePin.TextLength < employeePin.MaxLength) employeePin.AppendText(key);
+                employeePin.SelectionStart = employeePin.TextLength;
+                employeePin.Focus();
+            };
+            keypad.Controls.Add(button, index % 3, 3 + index / 3);
+        }
+        var enter = new Button { Text = "Continue" };
+        StyleButton(enter, true);
+        enter.Dock = DockStyle.Fill;
+        enter.Margin = new Padding(4);
+        enter.Click += (sender, args) => SubmitEmployeePin();
+        keypad.Controls.Add(enter, 0, 7);
+        keypad.SetColumnSpan(enter, 3);
+        screen.Controls.Add(keypad, 0, 1);
+        return screen;
+    }
+
+    private void ShowPinScreen()
+    {
+        selectedEmployeeIndex = -1;
+        employeePin.Clear();
+        pinMessage.Text = "";
+        employeeView.Visible = false;
+        pinView.Visible = true;
+        pinView.BringToFront();
+        employeePin.Focus();
+        inactivity.Restart();
     }
 
     private Employee SelectedEmployee
     {
-        get { return SelectedEmployeeIndex < 0 ? null : employees[SelectedEmployeeIndex]; }
+        get { return selectedEmployeeIndex < 0 ? null : employees[selectedEmployeeIndex]; }
     }
 
     private Shift ActiveShift
@@ -385,20 +492,6 @@ internal sealed class TimeClock : Form, IMessageFilter
         int width = Math.Max(0, history.ClientSize.Width - SystemInformation.VerticalScrollBarWidth);
         history.Columns[0].Width = history.Columns[1].Width = width * 3 / 10;
         history.Columns[2].Width = history.Columns[3].Width = width / 5;
-    }
-
-    private void PopulateEmployees(int index)
-    {
-        people.Items.Clear();
-        activeEmployeeIndexes.Clear();
-        for (int employeeIndex = 0; employeeIndex < employees.Count; employeeIndex++)
-        {
-            if (employees[employeeIndex].Inactive) continue;
-            activeEmployeeIndexes.Add(employeeIndex);
-            people.Items.Add(employees[employeeIndex].Name);
-        }
-        people.SelectedIndex = activeEmployeeIndexes.IndexOf(index);
-        RefreshEmployee();
     }
 
     private static void UseDarkCaption(Form window)
@@ -516,7 +609,6 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private void ShowSupervisorPanel()
     {
-        int previousEmployee = SelectedEmployeeIndex;
         bool restartingForUpdate = false;
         using (var dialog = SupervisorDialog("Supervisor timesheets", 760, 594))
         {
@@ -607,7 +699,7 @@ internal sealed class TimeClock : Form, IMessageFilter
             };
             foreach (Employee employee in employees) picker.Items.Add(SupervisorEmployeeName(employee));
             editButton.Enabled = delete.Enabled = addShift.Enabled = setPin.Enabled = changeStatus.Enabled = false;
-            if (picker.Items.Count > 0) picker.SelectedIndex = Math.Max(0, previousEmployee);
+            if (picker.Items.Count > 0) picker.SelectedIndex = 0;
             layout.Controls.Add(tools, 0, 0);
             layout.Controls.Add(grid, 0, 1);
             layout.Controls.Add(footer, 0, 2);
@@ -615,7 +707,6 @@ internal sealed class TimeClock : Form, IMessageFilter
             dialog.ShowDialog(this);
         }
         if (restartingForUpdate) Close();
-        else PopulateEmployees(previousEmployee);
     }
 
     private static string SupervisorEmployeeName(Employee employee)
@@ -1558,6 +1649,7 @@ internal sealed class TimeClock : Form, IMessageFilter
                 return "Enter a unique employee name.";
 
             if (MatchesSupervisorPin(pin)) return "Choose a different employee PIN.";
+            if (EmployeePinInUse(pin, -1)) return "That PIN is already used by an employee.";
 
             return SaveChange(records => records.Add(new Employee { Name = name, PinCredential = CreateCredential(pin) }))
                 ? null : "Try saving again.";
@@ -1570,6 +1662,7 @@ internal sealed class TimeClock : Form, IMessageFilter
             true, false, (name, pin) =>
             {
                 if (MatchesSupervisorPin(pin)) return "Choose a different employee PIN.";
+                if (EmployeePinInUse(pin, index)) return "That PIN is already used by an employee.";
                 return SaveChange(records => records[index].PinCredential = CreateCredential(pin))
                     ? null : "Try saving again.";
             });
@@ -1615,26 +1708,65 @@ internal sealed class TimeClock : Form, IMessageFilter
         return null;
     }
 
-    private void PromptForPunch(bool finishShift)
+    private bool EmployeePinInUse(string pin, int exceptIndex)
     {
-        if (SelectedEmployee == null || string.IsNullOrEmpty(SelectedEmployee.PinCredential)) return;
-        string action = finishShift ? clockOut.Text : punch.Text;
-        if (ShowPinDialog(action, "Enter the employee PIN for " + SelectedEmployee.Name + ".", false, false,
-            (name, pin) => RecordPunch(finishShift, pin), PinLengthLimit(SelectedEmployee.PinCredential)))
-            inactivity.Restart();
+        return employees.Where((employee, index) => index != exceptIndex)
+            .Any(employee => MatchesFourDigitPin(employee.PinCredential, pin));
     }
 
-    private string RecordPunch(bool finishShift, string pin)
+    private void SubmitEmployeePin()
     {
-        int employeeIndex = SelectedEmployeeIndex;
-        if (employeeIndex < 0 || SelectedEmployee.Inactive || string.IsNullOrEmpty(SelectedEmployee.PinCredential))
-            return "Ask a supervisor to set your employee PIN.";
+        inactivity.Restart();
+        string pin = employeePin.Text;
+        employeePin.Clear();
+        employeePin.Focus();
+        if (pin.Length == 0) return;
 
-        string error = Authenticate(SelectedEmployee.PinCredential, pin);
-        if (error != null) return error;
+        DateTime now = DateTime.UtcNow;
+        pinMessage.Text = PinRetryMessage(now);
+        if (!string.IsNullOrEmpty(pinMessage.Text)) return;
 
-        if (SaveChange(records =>
+        int match = -1;
+        for (int index = 0; index < employees.Count; index++)
         {
+            Employee employee = employees[index];
+            if (employee.Inactive || !MatchesPin(employee.PinCredential, pin)) continue;
+            if (match >= 0)
+            {
+                pinMessage.Text = "Ask a supervisor to reset your PIN.";
+                return;
+            }
+            match = index;
+        }
+        if (match < 0)
+        {
+            pinMessage.Text = RecordFailedPinAttempt(DateTime.UtcNow);
+            return;
+        }
+
+        failedAttempts = 0;
+        selectedEmployeeIndex = match;
+        RefreshEmployee();
+        pinView.Visible = false;
+        employeeView.Visible = true;
+        employeeView.BringToFront();
+        (ActiveShift == null ? punch : clockOut).Focus();
+        inactivity.Restart();
+    }
+
+    private void PunchAndSignOut(bool finishShift)
+    {
+        int employeeIndex = selectedEmployeeIndex;
+        Employee employee = SelectedEmployee;
+        if (employee == null) return;
+
+        if (!SaveChange(records =>
+        {
+            if (employeeIndex >= records.Count || records[employeeIndex].Inactive ||
+                records[employeeIndex].Name != employee.Name ||
+                records[employeeIndex].PinCredential != employee.PinCredential)
+                throw new InvalidOperationException("Employee access has changed. Sign in again.");
+
             var shifts = records[employeeIndex].Shifts;
             var shift = shifts.LastOrDefault(s => !s.End.HasValue);
             if (finishShift != (shift != null))
@@ -1654,13 +1786,10 @@ internal sealed class TimeClock : Form, IMessageFilter
 
             if (activeBreak != null) activeBreak.End = now;
             shift.End = now;
-        }))
-        {
-            RefreshEmployee();
-            return null;
-        }
+        })) return;
 
-        return "Try recording the punch again.";
+        ShowPinScreen();
+        pinMessage.Text = finishShift ? "Clocked out." : "Clocked in.";
     }
 
     private bool ShowPinDialog(string title, string instructions, bool create, bool includeName,
@@ -1949,23 +2078,40 @@ internal sealed class TimeClock : Form, IMessageFilter
     private string Authenticate(string credential, string pin)
     {
         DateTime now = DateTime.UtcNow;
-        if (now < retryAfter)
-            return "Too many attempts. Try again in " + Math.Ceiling((retryAfter - now).TotalSeconds) + " seconds.";
+        string retryMessage = PinRetryMessage(now);
+        if (retryMessage != null) return retryMessage;
 
-        int limit = PinLengthLimit(credential);
-        bool validLength = limit == 4 ? IsValidPin(pin, 4) :
-            pin != null && pin.Length >= 6 && pin.Length <= limit && IsNumeric(pin);
-        if (validLength && VerifyCredential(credential, pin))
+        if (MatchesPin(credential, pin))
         {
             failedAttempts = 0;
             return null;
         }
 
+        return RecordFailedPinAttempt(now);
+    }
+
+    private string PinRetryMessage(DateTime now)
+    {
+        return now < retryAfter ?
+            "Too many attempts. Try again in " + Math.Ceiling((retryAfter - now).TotalSeconds) + " seconds." : null;
+    }
+
+    private string RecordFailedPinAttempt(DateTime now)
+    {
         failedAttempts++;
         if (failedAttempts < 5) return "Incorrect PIN.";
         failedAttempts = 0;
         retryAfter = now.AddSeconds(30);
         return "Too many attempts. Try again in 30 seconds.";
+    }
+
+    private static bool MatchesPin(string credential, string pin)
+    {
+        if (string.IsNullOrEmpty(credential)) return false;
+        int limit = PinLengthLimit(credential);
+        bool validLength = limit == 4 ? IsValidPin(pin, 4) :
+            pin != null && pin.Length >= 6 && pin.Length <= limit && IsNumeric(pin);
+        return validLength && VerifyCredential(credential, pin);
     }
 
     private static int PinLengthLimit(string credential)
@@ -2076,16 +2222,12 @@ internal sealed class TimeClock : Form, IMessageFilter
     {
         Shift shift = ActiveShift;
         DateTime now = DateTime.UtcNow;
-        status.Text = SelectedEmployee == null ? "Select an employee" :
-            shift == null ? "Clocked out" : "Clocked in";
+        employeeName.Text = SelectedEmployee == null ? "" : SelectedEmployee.Name;
+        status.Text = shift == null ? "Clocked out" : "Clocked in";
         elapsed.Text = Duration(shift == null ? TimeSpan.Zero : shift.Worked(now));
-        details.Text = employees.Count == 0 ? "A supervisor can add employees from the gear menu." :
-            shift == null ? "Time worked" :
+        details.Text = shift == null ? "Time worked" :
             "Time worked   |   Started " + LocalTime(shift.Start);
         bool hasPin = SelectedEmployee != null && !string.IsNullOrEmpty(SelectedEmployee.PinCredential);
-        managePin.Enabled = SelectedEmployee != null;
-        if (SelectedEmployee != null && !hasPin)
-            details.Text = "Ask a supervisor to set your employee PIN.";
         punch.Enabled = hasPin && shift == null;
         punch.Text = "Clock in";
         clockOut.Enabled = hasPin && shift != null;

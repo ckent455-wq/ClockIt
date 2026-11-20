@@ -9,8 +9,6 @@ internal sealed class FishbowlClock : Button
     private static readonly Color DeepBlue = Color.FromArgb(10, 30, 45);
     private static readonly Color WaterTop = Color.FromArgb(30, 111, 130);
     private static readonly Color WaterBottom = Color.FromArgb(9, 48, 69);
-    private const float EventDuration = 16;
-    private const float DropStart = 13;
     private static readonly Color[] FishColors =
     {
         Color.FromArgb(255, 175, 76), Color.FromArgb(111, 207, 231), Color.FromArgb(243, 129, 165),
@@ -23,18 +21,14 @@ internal sealed class FishbowlClock : Button
         Color.FromArgb(222, 250, 174), Color.FromArgb(255, 241, 182), Color.FromArgb(119, 70, 175),
         Color.FromArgb(255, 208, 188), Color.FromArgb(176, 255, 232)
     };
-    private readonly Random random = new Random();
-    private readonly int[] colors = { 0, 1, 2 };
-    private int selectedFish;
-    private float nextEventStart;
-    private bool replacementColored;
+    public int FishCount { get; set; }
+
     private readonly Stopwatch swimming = new Stopwatch();
     private readonly Timer animation = new Timer { Interval = 33 };
 
     public FishbowlClock()
     {
         DoubleBuffered = true;
-        ScheduleFishEvent(0);
         animation.Tick += (sender, args) => Invalidate();
     }
 
@@ -84,48 +78,13 @@ internal sealed class FishbowlClock : Button
         using (var glow = new LinearGradientBrush(new Rectangle(75, 135, 650, 365), DeepBlue, BackColor, 90))
             canvas.FillEllipse(glow, 75, 135, 650, 365);
 
-        float eventTime = UpdateFishEvent(time);
-        DrawBowl(canvas, time, eventTime);
+        DrawBowl(canvas, time);
         using (var color = new SolidBrush(ForeColor))
         using (var alignment = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
             canvas.DrawString(Text, Font, color, new RectangleF(0, 8, 800, 120), alignment);
     }
 
-    private float UpdateFishEvent(float time)
-    {
-        while (time >= nextEventStart + EventDuration)
-        {
-            ColorReplacement();
-            ScheduleFishEvent(nextEventStart + EventDuration);
-        }
-
-        float eventTime = time - nextEventStart;
-        if (eventTime >= DropStart) ColorReplacement();
-        return eventTime;
-    }
-
-    private void ScheduleFishEvent(float after)
-    {
-        nextEventStart = after + random.Next(20, 66);
-        selectedFish = random.Next(colors.Length);
-        replacementColored = false;
-    }
-
-    private void ColorReplacement()
-    {
-        if (replacementColored) return;
-        int choice = random.Next(FishColors.Length - colors.Length);
-        for (int color = 0; color < FishColors.Length; color++)
-        {
-            if (Array.IndexOf(colors, color) >= 0) continue;
-            if (choice-- != 0) continue;
-            colors[selectedFish] = color;
-            replacementColored = true;
-            return;
-        }
-    }
-
-    private void DrawBowl(Graphics canvas, float time, float eventTime)
+    private void DrawBowl(Graphics canvas, float time)
     {
         using (var bowl = new GraphicsPath())
         {
@@ -155,9 +114,15 @@ internal sealed class FishbowlClock : Button
             DrawBubbles(canvas, time);
             canvas.Restore(clipped);
 
-            DrawFish(canvas, bowl, time, eventTime, 295, 0.82, 0.0, 1.0f, 0);
-            DrawFish(canvas, bowl, time, eventTime, 345, 0.64, 2.0, 0.8f, 1);
-            DrawFish(canvas, bowl, time, eventTime, 396, 0.91, 4.1, 0.70f, 2);
+            float scale = (float)Math.Min(1, Math.Sqrt(3.0 / Math.Max(1, FishCount)));
+            for (int index = 0; index < FishCount; index++)
+            {
+                float depth = 264 + 162f * (index + 0.5f) / FishCount;
+                double speed = 0.64 + 0.09 * (index % 4);
+                double offset = index * 2.4;
+                float size = scale * (1.0f - 0.15f * (index % 3));
+                DrawFish(canvas, bowl, time, depth, speed, offset, size, index);
+            }
 
             using (var outline = new Pen(Color.FromArgb(163, 123, 217, 226), 3))
                 canvas.DrawPath(outline, bowl);
@@ -207,67 +172,24 @@ internal sealed class FishbowlClock : Button
         }
     }
 
-    private void DrawFish(Graphics canvas, GraphicsPath bowl, float time, float eventTime, float depth, double speed, double offset, float size, int style)
+    private static void DrawFish(Graphics canvas, GraphicsPath bowl, float time, float depth, double speed, double offset, float size, int index)
     {
-        const float splashAt = 14.3f;
-        const float waterline = 213;
-        bool selected = selectedFish == style;
-        bool floating = selected && eventTime >= 0 && eventTime < 9;
-        if (selected && eventTime >= 9 && eventTime < DropStart) return;
-
-        bool entering = selected && eventTime >= DropStart;
-        Color color = FishColors[colors[style]];
-        Color markings = FishMarkings[colors[style]];
-
-        float swimTime = floating ? time - eventTime : time;
-        double cycle = swimTime * speed + offset;
+        int style = index % 3;
+        int color = index % FishColors.Length;
+        double cycle = time * speed + offset;
         float x = 400 + (float)Math.Sin(cycle) * 152;
         float y = depth + (float)Math.Sin(cycle * 1.7) * 13;
         float direction = Math.Cos(cycle) >= 0 ? 1 : -1;
-        float tail = floating ? 0 : (float)Math.Sin(time * 10 + offset) * 5;
-        float rotation = 0;
-        int opacity = 255;
-        if (floating)
-        {
-            float progress = Math.Min(1, eventTime / 4);
-            float eased = progress * progress * (3 - 2 * progress);
-            y += (231 - y) * eased;
-            x += direction * eventTime * 3;
-            rotation = direction * 180 * eased;
-            if (eventTime > 6) opacity = (int)(255 * (9 - eventTime) / 3);
-        }
-        else if (entering)
-        {
-            double nextCycle = (time + EventDuration - eventTime) * speed + offset;
-            float landingX = 400 + (float)Math.Sin(nextCycle) * 152;
-            if (eventTime < splashAt)
-            {
-                float fall = (eventTime - DropStart) / (splashAt - DropStart);
-                x = landingX;
-                y = -55 + (waterline + 55) * fall * fall;
-                direction = Math.Cos(nextCycle) >= 0 ? 1 : -1;
-                rotation = 85;
-            }
-            else
-            {
-                float settle = (eventTime - splashAt) / (EventDuration - splashAt);
-                float eased = settle * settle * (3 - 2 * settle);
-                x = landingX + (x - landingX) * eased;
-                y = waterline + (y - waterline) * eased;
-                rotation = 85 * (1 - eased);
-                DrawSplash(canvas, landingX, waterline, eventTime - splashAt);
-            }
-        }
+        float tail = (float)Math.Sin(time * 10 + offset) * 5;
         float bodyHeight = style == 1 ? 29 : style == 2 ? 34 : 42;
         GraphicsState transform = canvas.Save();
-        if (!entering || eventTime >= splashAt) canvas.SetClip(bowl, CombineMode.Intersect);
+        canvas.SetClip(bowl, CombineMode.Intersect);
         canvas.TranslateTransform(x, y);
-        canvas.RotateTransform(rotation);
         canvas.ScaleTransform(direction * size, size);
 
-        using (var fin = new SolidBrush(Color.FromArgb(opacity, markings)))
-        using (var body = new SolidBrush(Color.FromArgb(opacity, color)))
-        using (var dark = new SolidBrush(Color.FromArgb(opacity, DeepBlue)))
+        using (var fin = new SolidBrush(FishMarkings[color]))
+        using (var body = new SolidBrush(FishColors[color]))
+        using (var dark = new SolidBrush(DeepBlue))
         {
             canvas.FillPolygon(fin, new[]
             {
@@ -293,43 +215,11 @@ internal sealed class FishbowlClock : Button
                 canvas.FillEllipse(fin, -3, 3, 7, 7);
                 canvas.FillEllipse(fin, 6, -11, 5, 5);
             }
-            if (floating)
-            {
-                using (var eye = new Pen(dark.Color, 2) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                {
-                    canvas.DrawLine(eye, 19, -8, 26, -1);
-                    canvas.DrawLine(eye, 26, -8, 19, -1);
-                }
-            }
-            else
-            {
-                canvas.FillEllipse(dark, 19, -8, 7, 7);
-                using (var shine = new SolidBrush(Color.FromArgb(opacity, Color.White)))
-                    canvas.FillEllipse(shine, 22, -7, 2, 2);
-            }
+            canvas.FillEllipse(dark, 19, -8, 7, 7);
+            using (var shine = new SolidBrush(Color.White))
+                canvas.FillEllipse(shine, 22, -7, 2, 2);
         }
 
         canvas.Restore(transform);
-    }
-
-    private static void DrawSplash(Graphics canvas, float x, float y, float elapsed)
-    {
-        const float duration = 0.9f;
-        if (elapsed >= duration) return;
-        float progress = elapsed / duration;
-        int opacity = (int)(230 * (1 - progress));
-        using (var ripple = new Pen(Color.FromArgb(opacity, 174, 246, 255), 2.5f))
-        using (var water = new SolidBrush(ripple.Color))
-        {
-            float radius = 6 + progress * 55;
-            canvas.DrawEllipse(ripple, x - radius, y - radius * 0.17f, radius * 2, radius * 0.34f);
-            for (int droplet = -3; droplet <= 3; droplet++)
-            {
-                float height = (4 - Math.Abs(droplet)) * 11 * (float)Math.Sin(progress * Math.PI);
-                float spread = droplet * (5 + progress * 14);
-                float diameter = 4 + (1 - progress) * 4;
-                canvas.FillEllipse(water, x + spread - diameter / 2, y - height - diameter, diameter, diameter);
-            }
-        }
     }
 }
