@@ -7,8 +7,31 @@ using System.Windows.Forms;
 internal sealed class FishbowlClock : Button
 {
     private static readonly Color DeepBlue = Color.FromArgb(10, 30, 45);
-    private static readonly Color WaterTop = Color.FromArgb(30, 111, 130);
-    private static readonly Color WaterBottom = Color.FromArgb(9, 48, 69);
+    private enum Season { Winter, Spring, Summer, Fall }
+
+    private static readonly Color[] WaterTops =
+    {
+        Color.FromArgb(43, 103, 151), Color.FromArgb(42, 122, 103),
+        Color.FromArgb(27, 137, 160), Color.FromArgb(128, 87, 73)
+    };
+    private static readonly Color[] WaterBottoms =
+    {
+        Color.FromArgb(15, 42, 78), Color.FromArgb(15, 61, 72),
+        Color.FromArgb(12, 62, 103), Color.FromArgb(55, 37, 56)
+    };
+    private static readonly Color[] FloorColors =
+    {
+        Color.FromArgb(156, 185, 210), Color.FromArgb(67, 125, 106),
+        Color.FromArgb(194, 157, 103), Color.FromArgb(133, 79, 62)
+    };
+    private static readonly Color[] PetalColors =
+    {
+        Color.FromArgb(244, 136, 187), Color.FromArgb(174, 157, 245), Color.FromArgb(255, 184, 146)
+    };
+    private static readonly Color[] LeafColors =
+    {
+        Color.FromArgb(245, 152, 64), Color.FromArgb(224, 98, 72), Color.FromArgb(239, 193, 105)
+    };
     private static readonly Color[] FishColors =
     {
         Color.FromArgb(255, 175, 76), Color.FromArgb(111, 207, 231), Color.FromArgb(243, 129, 165),
@@ -22,6 +45,12 @@ internal sealed class FishbowlClock : Button
         Color.FromArgb(255, 208, 188), Color.FromArgb(176, 255, 232)
     };
     public int FishCount { get; set; }
+    private Season season;
+
+    public void SetDate(DateTime localDate)
+    {
+        season = (Season)((localDate.Month % 12) / 3);
+    }
 
     private readonly Stopwatch swimming = new Stopwatch();
     private readonly Timer animation = new Timer { Interval = 33 };
@@ -75,7 +104,7 @@ internal sealed class FishbowlClock : Button
         canvas.TranslateTransform((ClientSize.Width - 800 * scale) / 2, (ClientSize.Height - 520 * scale) / 2);
         canvas.ScaleTransform(scale, scale);
 
-        using (var glow = new LinearGradientBrush(new Rectangle(75, 135, 650, 365), DeepBlue, BackColor, 90))
+        using (var glow = new LinearGradientBrush(new Rectangle(75, 135, 650, 365), WaterBottoms[(int)season], BackColor, 90))
             canvas.FillEllipse(glow, 75, 135, 650, 365);
 
         DrawBowl(canvas, time);
@@ -106,11 +135,11 @@ internal sealed class FishbowlClock : Button
                 waterShape.AddLine(665, 211, 665, 500);
                 waterShape.AddLine(665, 500, 135, 500);
                 waterShape.CloseFigure();
-                using (var water = new LinearGradientBrush(waterShape.GetBounds(), WaterTop, WaterBottom, 90))
+                using (var water = new LinearGradientBrush(waterShape.GetBounds(), WaterTops[(int)season], WaterBottoms[(int)season], 90))
                     canvas.FillPath(water, waterShape);
             }
 
-            DrawBowlFloor(canvas, time);
+            DrawBowlFloor(canvas, time, season);
             DrawBubbles(canvas, time);
             canvas.Restore(clipped);
 
@@ -133,28 +162,135 @@ internal sealed class FishbowlClock : Button
         }
     }
 
-    private static void DrawBowlFloor(Graphics canvas, float time)
+    private static void DrawBowlFloor(Graphics canvas, float time, Season current)
     {
-        using (var sand = new SolidBrush(Color.FromArgb(110, 78, 149, 152)))
-            canvas.FillEllipse(sand, 190, 438, 420, 65);
+        using (var floor = new SolidBrush(FloorColors[(int)current]))
+            canvas.FillEllipse(floor, 177, 436, 446, 73);
 
-        using (var pebbles = new SolidBrush(Color.FromArgb(89, 113, 165, 160)))
+        using (var pebbles = new SolidBrush(Color.FromArgb(80, DeepBlue)))
         {
             for (int index = 0; index < 12; index++)
                 canvas.FillEllipse(pebbles, 223 + index * 31, 454 + index % 3 * 9, 14 + index % 4 * 3, 5 + index % 3);
         }
 
-        using (var stem = new Pen(Color.FromArgb(147, 81, 185, 150), 4) { EndCap = LineCap.Round })
+        switch (current)
         {
-            foreach (int root in new[] { 245, 552 })
+            case Season.Winter: DrawChristmas(canvas, time); break;
+            case Season.Spring: DrawFlowers(canvas, time); break;
+            case Season.Summer: DrawBeach(canvas); break;
+            case Season.Fall: DrawFall(canvas, time); break;
+        }
+    }
+
+    private static void DrawChristmas(Graphics canvas, float time)
+    {
+        using (var trunk = new SolidBrush(Color.FromArgb(124, 79, 58)))
+        using (var needles = new SolidBrush(Color.FromArgb(36, 151, 112)))
+        using (var light = new SolidBrush(Color.FromArgb(255, 224, 140)))
+        using (var red = new SolidBrush(Color.FromArgb(233, 98, 104)))
+        {
+            canvas.FillRectangle(trunk, 243, 419, 14, 33);
+            for (int tier = 2; tier >= 0; tier--)
             {
-                for (int blade = -1; blade <= 1; blade++)
-                {
-                    float sway = (float)Math.Sin(time * 1.8 + blade + root) * 6;
-                    canvas.DrawBezier(stem, root, 457, root - blade * 10, 420, root + blade * 31 + sway, 415,
-                        root + blade * 23 + sway, 382 + Math.Abs(blade) * 19);
-                }
+                int top = 344 + tier * 25;
+                int spread = 25 + tier * 10;
+                canvas.FillPolygon(needles, new[] { new Point(250, top), new Point(250 - spread, top + 47), new Point(250 + spread, top + 47) });
             }
+            canvas.FillEllipse(light, 244, 337, 12, 12);
+            canvas.FillEllipse(red, 230, 390, 8, 8);
+            canvas.FillEllipse(red, 268, 410, 9, 9);
+            canvas.FillEllipse(light, 246, 404, 8, 8);
+            canvas.FillEllipse(light, 222, 425, 7, 7);
+            canvas.FillRectangle(red, 517, 425, 43, 31);
+            canvas.FillRectangle(light, 535, 425, 7, 31);
+            canvas.FillRectangle(light, 517, 435, 43, 5);
+        }
+        using (var snow = new SolidBrush(Color.FromArgb(180, 235, 247, 255)))
+        {
+            for (int index = 0; index < 17; index++)
+            {
+                float x = 202 + index * 23 + (float)Math.Sin(time + index) * 6;
+                float y = 233 + (time * (9 + index % 4) + index * 37) % 190;
+                int size = 2 + index % 4;
+                canvas.FillEllipse(snow, x, y, size, size);
+            }
+        }
+    }
+
+    private static void DrawFlowers(Graphics canvas, float time)
+    {
+        using (var stem = new Pen(Color.FromArgb(123, 211, 146), 4))
+        using (var center = new SolidBrush(Color.FromArgb(255, 221, 135)))
+        {
+            for (int index = 0; index < 6; index++)
+            {
+                float root = index < 3 ? 225 + index * 26 : 505 + (index - 3) * 26;
+                float x = root + 9 * (float)Math.Sin(time * 1.4 + index);
+                float y = 395 - 20 * (index % 3);
+                canvas.DrawBezier(stem, root, 457, root - 12, 427, x + 7, y + 23, x, y);
+                using (var petals = new SolidBrush(PetalColors[index % PetalColors.Length]))
+                {
+                    for (int petal = 0; petal < 5; petal++)
+                    {
+                        double angle = petal * Math.PI * 2 / 5;
+                        canvas.FillEllipse(petals, x + 11 * (float)Math.Cos(angle) - 7,
+                            y + 11 * (float)Math.Sin(angle) - 7, 14, 14);
+                    }
+                }
+                canvas.FillEllipse(center, x - 6, y - 6, 12, 12);
+            }
+        }
+    }
+
+    private static void DrawBeach(Graphics canvas)
+    {
+        using (var pole = new Pen(Color.FromArgb(255, 234, 193), 5))
+        using (var coral = new SolidBrush(Color.FromArgb(244, 115, 103)))
+        using (var cream = new SolidBrush(Color.FromArgb(255, 229, 172)))
+        using (var blue = new SolidBrush(Color.FromArgb(59, 154, 214)))
+        {
+            canvas.DrawLine(pole, 251, 389, 245, 455);
+            canvas.FillPie(coral, 196, 355, 110, 76, 180, 180);
+            canvas.FillPie(cream, 219, 355, 64, 76, 180, 180);
+            canvas.FillPie(coral, 239, 355, 24, 76, 180, 180);
+            canvas.FillEllipse(cream, 523, 409, 43, 43);
+            canvas.FillPie(coral, 523, 409, 43, 43, 270, 110);
+            canvas.FillPie(blue, 523, 409, 43, 43, 120, 83);
+            canvas.FillEllipse(cream, 540, 426, 9, 9);
+        }
+    }
+
+    private static void DrawFall(Graphics canvas, float time)
+    {
+        using (var orange = new SolidBrush(Color.FromArgb(244, 146, 64)))
+        using (var shadow = new SolidBrush(Color.FromArgb(194, 84, 54)))
+        using (var stem = new Pen(Color.FromArgb(127, 152, 88), 5))
+        {
+            for (int index = 0; index < 3; index++)
+            {
+                int x = index == 0 ? 241 : 501 + index * 24;
+                int y = index == 2 ? 437 : 424;
+                canvas.DrawLine(stem, x, y, x + 4, y - 12);
+                canvas.FillEllipse(shadow, x - 31, y - 2, 62, 33);
+                canvas.FillEllipse(orange, x - 19, y - 3, 38, 35);
+            }
+        }
+        for (int index = 0; index < 12; index++)
+        {
+            float x = 209 + index * 34 + 12 * (float)Math.Sin(time * 1.3 + index);
+            float y = 236 + (time * (9 + index % 4) + index * 47) % 177;
+            GraphicsState leaf = canvas.Save();
+            canvas.TranslateTransform(x, y);
+            canvas.RotateTransform((float)Math.Sin(time + index) * 48);
+            using (var color = new SolidBrush(LeafColors[index % LeafColors.Length]))
+            {
+                canvas.FillPolygon(color, new[]
+                {
+                    new Point(-7, 0), new Point(-9, -5), new Point(-4, -4), new Point(0, -10),
+                    new Point(4, -4), new Point(9, -5), new Point(7, 0), new Point(0, 8)
+                });
+            }
+            canvas.Restore(leaf);
         }
     }
 

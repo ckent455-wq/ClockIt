@@ -19,14 +19,15 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.6.0")]
-[assembly: AssemblyFileVersion("1.0.6.0")]
+[assembly: AssemblyVersion("1.0.7.0")]
+[assembly: AssemblyFileVersion("1.0.7.0")]
 
 public class Employee
 {
     public string Name { get; set; }
     public string PinCredential { get; set; }
     public bool Inactive { get; set; }
+    public bool IsSupervisor { get; set; }
     public List<Shift> Shifts { get; set; }
 
     public Employee()
@@ -109,6 +110,7 @@ internal sealed class TimeClock : Form, IMessageFilter
     private readonly TextBox employeePin = new TextBox();
     private readonly Label pinMessage = new Label();
     private readonly Label employeeName = new Label();
+    private readonly Button supervisorMenu = new Button { Text = "Supervisor menu" };
     private int selectedEmployeeIndex = -1;
     private int failedAttempts;
     private DateTime retryAfter;
@@ -179,10 +181,20 @@ internal sealed class TimeClock : Form, IMessageFilter
         var signOut = new Button { Text = "Sign out", Dock = DockStyle.Right };
         StyleButton(signOut, false);
         signOut.Click += (sender, args) => ShowPinScreen();
+        StyleButton(supervisorMenu, false);
+        supervisorMenu.Dock = DockStyle.Right;
+        supervisorMenu.Visible = false;
+        supervisorMenu.Click += (sender, args) =>
+        {
+            if (SelectedEmployee == null || !SelectedEmployee.IsSupervisor) return;
+            ShowPinScreen();
+            ShowSupervisorPanel();
+        };
         employeeName.Dock = DockStyle.Fill;
         employeeName.Font = new Font("Segoe UI", 23, FontStyle.Bold);
         employeeName.AutoEllipsis = true;
         heading.Controls.Add(employeeName);
+        heading.Controls.Add(supervisorMenu);
         heading.Controls.Add(signOut);
         layout.Controls.Add(heading, 0, 0);
 
@@ -355,8 +367,10 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private void RefreshIdleClock()
     {
+        DateTime now = DateTime.Now;
         idleClock.FishCount = employees.Count(employee => employee.Shifts.Any(shift => !shift.End.HasValue));
-        idleClock.Text = DateTime.Now.ToString("h:mm tt", CultureInfo.InvariantCulture);
+        idleClock.SetDate(now);
+        idleClock.Text = now.ToString("h:mm tt", CultureInfo.InvariantCulture);
     }
 
     private bool CanShowIdleScreen()
@@ -749,7 +763,8 @@ internal sealed class TimeClock : Form, IMessageFilter
             picker.SelectedIndexChanged += (sender, args) =>
             {
                 int index = picker.SelectedIndex;
-                addShift.Enabled = setPin.Enabled = changeStatus.Enabled = index >= 0;
+                addShift.Enabled = index >= 0;
+                setPin.Enabled = changeStatus.Enabled = index >= 0 && !employees[index].IsSupervisor;
                 changeStatus.Text = EmployeeStatusAction(index >= 0 && employees[index].Inactive);
                 refresh();
             };
@@ -1805,30 +1820,43 @@ internal sealed class TimeClock : Form, IMessageFilter
         pinMessage.Text = PinRetryMessage(now);
         if (!string.IsNullOrEmpty(pinMessage.Text)) return;
 
+        int match;
         if (MatchesSupervisorPin(pin))
         {
             failedAttempts = 0;
-            ShowSupervisorPanel();
-            if (!IsDisposed) ShowPinScreen();
-            return;
-        }
-
-        int match = -1;
-        for (int index = 0; index < employees.Count; index++)
-        {
-            Employee employee = employees[index];
-            if (employee.Inactive || !MatchesPin(employee.PinCredential, pin)) continue;
-            if (match >= 0)
+            match = employees.FindIndex(employee => employee.IsSupervisor);
+            if (match < 0)
             {
-                pinMessage.Text = "Ask a supervisor to reset your PIN.";
+                if (!SaveChange(records =>
+                {
+                    if (records.Any(employee => employee.IsSupervisor)) return;
+                    string name = "Supervisor";
+                    for (int suffix = 2; records.Any(employee => string.Equals(employee.Name, name, StringComparison.OrdinalIgnoreCase)); suffix++)
+                        name = "Supervisor (" + suffix + ")";
+                    records.Add(new Employee { Name = name, IsSupervisor = true });
+                })) return;
+                match = employees.FindIndex(employee => employee.IsSupervisor);
+            }
+        }
+        else
+        {
+            match = -1;
+            for (int index = 0; index < employees.Count; index++)
+            {
+                Employee employee = employees[index];
+                if (employee.IsSupervisor || employee.Inactive || !MatchesPin(employee.PinCredential, pin)) continue;
+                if (match >= 0)
+                {
+                    pinMessage.Text = "Ask a supervisor to reset your PIN.";
+                    return;
+                }
+                match = index;
+            }
+            if (match < 0)
+            {
+                pinMessage.Text = RecordFailedPinAttempt(DateTime.UtcNow);
                 return;
             }
-            match = index;
-        }
-        if (match < 0)
-        {
-            pinMessage.Text = RecordFailedPinAttempt(DateTime.UtcNow);
-            return;
         }
 
         failedAttempts = 0;
@@ -1851,6 +1879,7 @@ internal sealed class TimeClock : Form, IMessageFilter
         {
             if (employeeIndex >= records.Count || records[employeeIndex].Inactive ||
                 records[employeeIndex].Name != employee.Name ||
+                records[employeeIndex].IsSupervisor != employee.IsSupervisor ||
                 records[employeeIndex].PinCredential != employee.PinCredential)
                 throw new InvalidOperationException("Employee access has changed. Sign in again.");
 
@@ -2321,7 +2350,8 @@ internal sealed class TimeClock : Form, IMessageFilter
         details.Text = shift == null ? "Time worked" :
             "Time worked   |   Started " + LocalTime(shift.Start);
         weeklyHours.Text = employee == null ? "" : "This week (Mon–Sun)   " + Duration(WorkedThisWeek(employee, now));
-        bool hasPin = employee != null && !string.IsNullOrEmpty(employee.PinCredential);
+        bool hasPin = employee != null && (employee.IsSupervisor || !string.IsNullOrEmpty(employee.PinCredential));
+        supervisorMenu.Visible = employee != null && employee.IsSupervisor;
         punch.Enabled = hasPin;
         punch.Text = shift == null ? "Clock In" : "Clock Out";
         punch.BackColor = shift == null ? ClockInAccent : ClockOutAccent;
