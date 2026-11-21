@@ -19,8 +19,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.11.0")]
-[assembly: AssemblyFileVersion("1.0.11.0")]
+[assembly: AssemblyVersion("1.0.12.0")]
+[assembly: AssemblyFileVersion("1.0.12.0")]
 
 public class Employee
 {
@@ -1337,11 +1337,19 @@ internal sealed class TimeClock : Form, IMessageFilter
         if (smtp != null && smtp.StatusCode != SmtpStatusCode.GeneralFailure)
             return "Gmail rejected the send. Check the sender, app password, and recipient.";
 
+        for (Exception cause = error; cause != null; cause = cause.InnerException)
+        {
+            if (cause is System.Net.Sockets.SocketException)
+                return "ClockIt lost its connection to Gmail. Check Gmail Sent before retrying.";
+            if (cause is System.Security.Authentication.AuthenticationException)
+                return "ClockIt could not establish a secure connection to Gmail. Check Gmail Sent before retrying.";
+        }
         return "Gmail send could not be confirmed. Check Gmail Sent before retrying.";
     }
 
     private static void SendGmail(PayrollEmailSettings email, MailMessage message)
     {
+        ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
         byte[] secret = ProtectedData.Unprotect(Convert.FromBase64String(email.ProtectedPassword), null, DataProtectionScope.CurrentUser);
         try
         {
