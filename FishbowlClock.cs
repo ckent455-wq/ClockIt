@@ -1,5 +1,7 @@
 using System;
 using System.Diagnostics;
+using System.Collections.Generic;
+using System.Linq;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
@@ -44,7 +46,25 @@ internal sealed class FishbowlClock : Button
         Color.FromArgb(222, 250, 174), Color.FromArgb(255, 241, 182), Color.FromArgb(119, 70, 175),
         Color.FromArgb(255, 208, 188), Color.FromArgb(176, 255, 232)
     };
-    public int FishCount { get; set; }
+    private int[] fish = new int[0];
+    private int transitionFish = -1;
+    private bool leaving;
+    private readonly Stopwatch transition = new Stopwatch();
+    private float transitionStart;
+
+    public void SetFish(IEnumerable<int> employeeIndices)
+    {
+        fish = employeeIndices.ToArray();
+    }
+
+    public void BeginPunchAnimation(int employeeIndex, bool isLeaving)
+    {
+        transitionFish = employeeIndex;
+        leaving = isLeaving;
+        transitionStart = (float)swimming.Elapsed.TotalSeconds;
+        transition.Restart();
+        Invalidate();
+    }
     private Season season;
 
     public void SetDate(DateTime localDate)
@@ -73,6 +93,8 @@ internal sealed class FishbowlClock : Button
         {
             animation.Stop();
             swimming.Stop();
+            transition.Reset();
+            transitionFish = -1;
         }
     }
 
@@ -143,15 +165,18 @@ internal sealed class FishbowlClock : Button
             DrawBubbles(canvas, time);
             canvas.Restore(clipped);
 
-            float scale = (float)Math.Min(1, Math.Sqrt(3.0 / Math.Max(1, FishCount)));
-            for (int index = 0; index < FishCount; index++)
+            float transitionDuration = leaving ? 6f : 4.5f;
+            bool animating = transitionFish >= 0 && transition.IsRunning && transition.Elapsed.TotalSeconds < transitionDuration;
+            int count = fish.Length + (animating && leaving ? 1 : 0);
+            float scale = (float)Math.Min(1, Math.Sqrt(3.0 / Math.Max(1, count)));
+            foreach (int index in fish)
             {
-                float depth = 264 + 162f * (index + 0.5f) / FishCount;
-                double speed = 0.64 + 0.09 * (index % 4);
-                double offset = index * 2.4;
-                float size = scale * (1.0f - 0.15f * (index % 3));
-                DrawFish(canvas, bowl, time, depth, speed, offset, size, index);
+                if (animating && !leaving && index == transitionFish) continue;
+                DrawFish(canvas, bowl, time, scale, index, -1, false);
             }
+            if (animating)
+                DrawFish(canvas, bowl, leaving ? transitionStart : time, scale, transitionFish,
+                    (float)(transition.Elapsed.TotalSeconds / transitionDuration), leaving);
 
             using (var outline = new Pen(Color.FromArgb(163, 123, 217, 226), 3))
                 canvas.DrawPath(outline, bowl);
@@ -308,24 +333,58 @@ internal sealed class FishbowlClock : Button
         }
     }
 
-    private static void DrawFish(Graphics canvas, GraphicsPath bowl, float time, float depth, double speed, double offset, float size, int index)
+    private static void DrawFish(Graphics canvas, GraphicsPath bowl, float time, float scale, int index, float progress, bool leaving)
     {
         int style = index % 3;
         int color = index % FishColors.Length;
+        float depth = 275 + (index * 47 % 140);
+        double speed = 0.64 + 0.09 * (index % 4);
+        double offset = index * 2.4;
+        float size = scale * (1.0f - 0.15f * (index % 3));
         double cycle = time * speed + offset;
         float x = 400 + (float)Math.Sin(cycle) * 152;
         float y = depth + (float)Math.Sin(cycle * 1.7) * 13;
         float direction = Math.Cos(cycle) >= 0 ? 1 : -1;
         float tail = (float)Math.Sin(time * 10 + offset) * 5;
         float bodyHeight = style == 1 ? 29 : style == 2 ? 34 : 42;
+        int alpha = 255;
+        float rotation = 0;
+        if (progress >= 0)
+        {
+            if (leaving)
+            {
+                float seconds = progress * 6f;
+                float roll = Math.Max(0, Math.Min(1, (seconds - 0.35f) / 1.1f));
+                roll = roll * roll * (3 - 2 * roll);
+                float rise = Math.Max(0, Math.Min(1, (seconds - 1.15f) / 2.5f));
+                rise = rise * rise * (3 - 2 * rise);
+                y += (225 - y) * rise;
+                if (seconds > 3.65f) y += (float)Math.Sin((seconds - 3.65f) * 3) * 2;
+                rotation = 180 * roll;
+                alpha = (int)(255 * Math.Max(0, Math.Min(1, (6 - seconds) / 1.2f)));
+                tail = 0;
+            }
+            else
+            {
+                // Hold above the rim briefly, then accelerate into the water.
+                float seconds = progress * 4.5f;
+                float drop = Math.Max(0, Math.Min(1, (seconds - 0.35f) / 0.8f));
+                float settle = Math.Max(0, Math.Min(1, (seconds - 1.15f) / 0.8f));
+                x = 400 + (x - 400) * settle;
+                y = 100 + (270 - 100) * drop * drop + (y - 270) * settle;
+                rotation = 70 * direction * (1 - settle);
+                if (settle < 1) tail = 0;
+            }
+        }
         GraphicsState transform = canvas.Save();
-        canvas.SetClip(bowl, CombineMode.Intersect);
+        if (progress < 0 || leaving || progress * 4.5f >= 1.15f) canvas.SetClip(bowl, CombineMode.Intersect);
         canvas.TranslateTransform(x, y);
+        canvas.RotateTransform(rotation);
         canvas.ScaleTransform(direction * size, size);
 
-        using (var fin = new SolidBrush(FishMarkings[color]))
-        using (var body = new SolidBrush(FishColors[color]))
-        using (var dark = new SolidBrush(DeepBlue))
+        using (var fin = new SolidBrush(Color.FromArgb(alpha, FishMarkings[color])))
+        using (var body = new SolidBrush(Color.FromArgb(alpha, FishColors[color])))
+        using (var dark = new SolidBrush(Color.FromArgb(alpha, DeepBlue)))
         {
             canvas.FillPolygon(fin, new[]
             {
@@ -351,9 +410,20 @@ internal sealed class FishbowlClock : Button
                 canvas.FillEllipse(fin, -3, 3, 7, 7);
                 canvas.FillEllipse(fin, 6, -11, 5, 5);
             }
-            canvas.FillEllipse(dark, 19, -8, 7, 7);
-            using (var shine = new SolidBrush(Color.White))
-                canvas.FillEllipse(shine, 22, -7, 2, 2);
+            if (leaving && progress >= 0 && progress * 6f > 1.2f)
+            {
+                using (var eye = new Pen(dark.Color, 2))
+                {
+                    canvas.DrawLine(eye, 19, -9, 26, -2);
+                    canvas.DrawLine(eye, 26, -9, 19, -2);
+                }
+            }
+            else
+            {
+                canvas.FillEllipse(dark, 19, -8, 7, 7);
+                using (var shine = new SolidBrush(Color.FromArgb(alpha, Color.White)))
+                    canvas.FillEllipse(shine, 22, -7, 2, 2);
+            }
         }
 
         canvas.Restore(transform);

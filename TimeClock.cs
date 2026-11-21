@@ -117,6 +117,8 @@ internal sealed class TimeClock : Form, IMessageFilter
     private readonly TableLayoutPanel pinView;
     private readonly Label punchConfirmation = new Label();
     private readonly Stopwatch confirmationTime = new Stopwatch();
+    private int punchFishIndex;
+    private bool punchFishLeaving;
     private readonly TextBox employeePin = new TextBox();
     private readonly Label pinMessage = new Label();
     private readonly Label employeeName = new Label();
@@ -345,7 +347,13 @@ internal sealed class TimeClock : Form, IMessageFilter
 
         if (confirmationTime.IsRunning)
         {
-            if (confirmationTime.Elapsed >= TimeSpan.FromSeconds(2.5)) ShowPinScreen();
+            if (confirmationTime.Elapsed >= TimeSpan.FromSeconds(2.5))
+            {
+                confirmationTime.Reset();
+                punchConfirmation.Visible = false;
+                ShowIdleClock();
+                idleClock.BeginPunchAnimation(punchFishIndex, punchFishLeaving);
+            }
             return;
         }
 
@@ -366,25 +374,32 @@ internal sealed class TimeClock : Form, IMessageFilter
 
         if (inactiveFor >= IdleDelay && CanShowIdleScreen())
         {
-            selectedEmployeeIndex = -1;
-            employeePin.Clear();
-            pinMessage.Text = "";
-            RefreshIdleClock();
-            employeeView.Visible = false;
-            pinView.Visible = false;
-            idleClock.Visible = true;
-            idleClock.BringToFront();
-            idleClock.Focus();
+            ShowIdleClock();
             return;
         }
 
         RefreshClock();
     }
 
+    private void ShowIdleClock()
+    {
+        selectedEmployeeIndex = -1;
+        employeePin.Clear();
+        pinMessage.Text = "";
+        RefreshIdleClock();
+        employeeView.Visible = false;
+        pinView.Visible = false;
+        idleClock.Visible = true;
+        idleClock.BringToFront();
+        idleClock.Focus();
+    }
+
     private void RefreshIdleClock()
     {
         DateTime now = DateTime.Now;
-        idleClock.FishCount = employees.Count(employee => employee.Shifts.Any(shift => !shift.End.HasValue));
+        idleClock.SetFish(employees.Select((employee, index) => new { employee, index })
+            .Where(item => item.employee.Shifts.Any(shift => !shift.End.HasValue))
+            .Select(item => item.index));
         idleClock.SetDate(now);
         idleClock.Text = now.ToString("h:mm tt", CultureInfo.InvariantCulture);
     }
@@ -534,11 +549,59 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private sealed class PunchButton : Button
     {
+        private bool mousePressed;
+        private bool keyPressed;
+
         public PunchButton()
         {
             FlatStyle = FlatStyle.Flat;
             Cursor = Cursors.Hand;
             DoubleBuffered = true;
+        }
+
+        protected override void OnMouseDown(MouseEventArgs args)
+        {
+            base.OnMouseDown(args);
+            if (args.Button == MouseButtons.Left) { mousePressed = true; Invalidate(); }
+        }
+
+        protected override void OnMouseMove(MouseEventArgs args)
+        {
+            base.OnMouseMove(args);
+            if (Capture) { mousePressed = ClientRectangle.Contains(args.Location); Invalidate(); }
+        }
+
+        protected override void OnMouseUp(MouseEventArgs args)
+        {
+            mousePressed = false;
+            Invalidate();
+            base.OnMouseUp(args);
+        }
+
+        protected override void OnMouseCaptureChanged(EventArgs args)
+        {
+            base.OnMouseCaptureChanged(args);
+            if (!Capture) { mousePressed = false; Invalidate(); }
+        }
+
+        protected override void OnKeyDown(KeyEventArgs args)
+        {
+            base.OnKeyDown(args);
+            if (args.KeyCode == Keys.Space) { keyPressed = true; Invalidate(); }
+        }
+
+        protected override void OnKeyUp(KeyEventArgs args)
+        {
+            keyPressed = false;
+            Invalidate();
+            base.OnKeyUp(args);
+        }
+
+        protected override void OnLostFocus(EventArgs args)
+        {
+            keyPressed = false;
+            Invalidate();
+            base.OnLostFocus(args);
         }
 
         protected override void OnSizeChanged(EventArgs args)
@@ -559,6 +622,13 @@ internal sealed class TimeClock : Form, IMessageFilter
             args.Graphics.Clear(Surface);
             args.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             Color fill = Enabled ? BackColor : Input;
+            bool pressed = Enabled && (mousePressed || keyPressed);
+            if (pressed)
+            {
+                fill = ControlPaint.Dark(fill, 0.25f);
+                bounds.Offset(0, 4);
+                bounds.Inflate(-4, -4);
+            }
             using (var brush = new SolidBrush(fill))
                 args.Graphics.FillEllipse(brush, bounds);
             if (Focused)
@@ -567,7 +637,9 @@ internal sealed class TimeClock : Form, IMessageFilter
                 using (var ring = new Pen(ForeColor, 2))
                     args.Graphics.DrawEllipse(ring, bounds);
             }
-            TextRenderer.DrawText(args.Graphics, Text, Font, ClientRectangle, Enabled ? ForeColor : Muted,
+            var textBounds = ClientRectangle;
+            if (pressed) textBounds.Offset(0, 4);
+            TextRenderer.DrawText(args.Graphics, Text, Font, textBounds, Enabled ? ForeColor : Muted,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
         }
     }
@@ -996,36 +1068,32 @@ internal sealed class TimeClock : Form, IMessageFilter
                 feedback.Text = "Shift saved. Payroll totals updated.";
             };
             Button edit = AddDialogButton(actions, "Edit shift", 115, false, editShift);
-            Button saveCsv = AddDialogButton(actions, "Save CSV", 110, false, () =>
+            Button savePdf = AddDialogButton(actions, "Save PDF", 110, false, () =>
             {
                 if (report.Rows.Count == 0) return;
                 using (var save = new SaveFileDialog
                 {
-                    Title = "Save weekly timesheet", Filter = "CSV files (*.csv)|*.csv",
-                    DefaultExt = "csv", AddExtension = true, OverwritePrompt = true,
+                    Title = "Save weekly timesheet", Filter = "PDF files (*.pdf)|*.pdf",
+                    DefaultExt = "pdf", AddExtension = true, OverwritePrompt = true,
                     FileName = PayrollFileName(report.FirstDay)
                 })
                 {
                     if (save.ShowDialog(dialog) != DialogResult.OK) return;
-                    if (!string.Equals(Path.GetExtension(save.FileName), ".csv", StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(Path.GetExtension(save.FileName), ".pdf", StringComparison.OrdinalIgnoreCase))
                     {
-                        feedback.Text = "Choose a filename ending in .csv.";
+                        feedback.Text = "Choose a filename ending in .pdf.";
                         return;
                     }
 
                     try
                     {
-                        string csv = report.ToCsv();
-                        WriteAtomically(save.FileName, stream =>
-                        {
-                            using (var writer = new StreamWriter(stream, new UTF8Encoding(true), 1024, true))
-                                writer.Write(csv);
-                        });
-                        feedback.Text = "CSV saved.";
+                        byte[] pdf = report.ToPdf();
+                        WriteAtomically(save.FileName, stream => stream.Write(pdf, 0, pdf.Length));
+                        feedback.Text = "PDF saved.";
                     }
                     catch (Exception error)
                     {
-                        feedback.Text = "Could not save the CSV. " + error.Message;
+                        feedback.Text = "Could not save the PDF. " + error.Message;
                     }
                 }
             });
@@ -1036,11 +1104,11 @@ internal sealed class TimeClock : Form, IMessageFilter
                 if (sending || email == null || report.Rows.Count == 0) return;
 
                 sending = true;
-                weekStart.Enabled = edit.Enabled = saveCsv.Enabled = send.Enabled = close.Enabled = false;
+                weekStart.Enabled = edit.Enabled = savePdf.Enabled = send.Enabled = close.Enabled = false;
                 feedback.Text = "Sending through Gmail…";
                 try
                 {
-                    using (var message = CreatePayrollMessage(email, report.FirstDay, report.ToCsv(), report.OpenShifts))
+                    using (var message = CreatePayrollMessage(email, report.FirstDay, report.ToPdf(), report.OpenShifts))
                         await Task.Run(() => SendGmail(email, message));
                     feedback.Text = "Gmail accepted the report for delivery.";
                 }
@@ -1051,7 +1119,7 @@ internal sealed class TimeClock : Form, IMessageFilter
                 finally
                 {
                     sending = false;
-                    weekStart.Enabled = saveCsv.Enabled = send.Enabled = close.Enabled = true;
+                    weekStart.Enabled = savePdf.Enabled = send.Enabled = close.Enabled = true;
                     edit.Enabled = selectedShift() != null;
                 }
             });
@@ -1073,7 +1141,7 @@ internal sealed class TimeClock : Form, IMessageFilter
                 }
                 preview.ClearSelection();
                 bool hasRows = report.Rows.Count > 0;
-                saveCsv.Enabled = hasRows;
+                savePdf.Enabled = hasRows;
                 send.Enabled = hasRows && email != null;
                 reportNotice.Text = (hasRows ? "Completed shifts and employee totals." : "No completed shifts in this week.") +
                     OpenShiftNote(report.OpenShifts);
@@ -1084,7 +1152,7 @@ internal sealed class TimeClock : Form, IMessageFilter
             edit.Enabled = false;
             weekStart.ValueChanged += (sender, args) => refresh();
             refresh();
-            dialog.AcceptButton = saveCsv;
+            dialog.AcceptButton = savePdf;
             dialog.CancelButton = close;
             dialog.FormClosing += (sender, args) => { if (sending) args.Cancel = true; };
             layout.Controls.Add(actions, 0, 5);
@@ -1235,10 +1303,10 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private static string PayrollFileName(DateTime firstDay)
     {
-        return "Timesheets-" + firstDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".csv";
+        return "Timesheets-" + firstDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".pdf";
     }
 
-    private static MailMessage CreatePayrollMessage(PayrollEmailSettings email, DateTime firstDay, string csv, int openShifts)
+    private static MailMessage CreatePayrollMessage(PayrollEmailSettings email, DateTime firstDay, byte[] pdf, int openShifts)
     {
         string start = firstDay.ToString("MMM d, yyyy", CultureInfo.InvariantCulture);
         string end = firstDay.AddDays(6).ToString("MMM d, yyyy", CultureInfo.InvariantCulture);
@@ -1247,9 +1315,7 @@ internal sealed class TimeClock : Form, IMessageFilter
             Subject = "Weekly timesheets | " + start + " to " + end,
             Body = "Attached is the weekly payroll timesheet for " + start + " through " + end + "." + OpenShiftNote(openShifts)
         };
-        var utf8 = new UTF8Encoding(true);
-        byte[] bytes = utf8.GetPreamble().Concat(utf8.GetBytes(csv)).ToArray();
-        message.Attachments.Add(new Attachment(new MemoryStream(bytes, false), PayrollFileName(firstDay), "text/csv"));
+        message.Attachments.Add(new Attachment(new MemoryStream(pdf, false), PayrollFileName(firstDay), "application/pdf"));
         return message;
     }
 
@@ -1329,20 +1395,11 @@ internal sealed class TimeClock : Form, IMessageFilter
             FirstDay = firstDay;
         }
 
-        public string ToCsv()
+        public byte[] ToPdf()
         {
-            var csv = new StringBuilder();
-            csv.AppendLine("Row type,Employee,Week start,Week end,Start in period (local),End in period (local),Break duration,Worked duration,Worked hours,Employee status");
-            string weekStart = FirstDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            string weekEnd = FirstDay.AddDays(6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            foreach (PayrollRow row in Rows)
-            {
-                string[] columns = row.Columns();
-                csv.AppendLine(string.Join(",", columns[0], PayrollCsvName(columns[1]), weekStart, weekEnd,
-                    columns[2], columns[3], columns[4], columns[5], columns[6], columns[7]));
-            }
-            return csv.ToString();
+            return PayrollPdf.Create(FirstDay, OpenShifts, Rows.Select(row => row.Columns()).ToList());
         }
+
     }
 
     private static WeeklyPayrollReport BuildWeeklyReport(IEnumerable<Employee> employees, DateTime firstDay)
@@ -1420,14 +1477,6 @@ internal sealed class TimeClock : Form, IMessageFilter
     private static string PayrollTime(DateTime utc)
     {
         return utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
-    }
-
-    private static string PayrollCsvName(string name)
-    {
-        string value = name ?? "";
-        string trimmed = value.TrimStart();
-        if (trimmed.Length > 0 && "=+-@".IndexOf(trimmed[0]) >= 0) value = "'" + value;
-        return "\"" + value.Replace("\"", "\"\"") + "\"";
     }
 
     private bool DeleteShift(Form owner, int employeeIndex, int shiftIndex)
@@ -1987,6 +2036,8 @@ internal sealed class TimeClock : Form, IMessageFilter
             shift.End = now;
         })) return;
 
+        punchFishIndex = employeeIndex;
+        punchFishLeaving = finishShift;
         selectedEmployeeIndex = -1;
         employeeView.Visible = false;
         punchConfirmation.Text = finishShift ? "Clocked out successfully" : "Clocked in successfully";
