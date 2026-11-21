@@ -19,8 +19,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.12.0")]
-[assembly: AssemblyFileVersion("1.0.12.0")]
+[assembly: AssemblyVersion("1.0.13.0")]
+[assembly: AssemblyFileVersion("1.0.13.0")]
 
 public class Employee
 {
@@ -1234,7 +1234,13 @@ internal sealed class TimeClock : Form, IMessageFilter
                     feedback.Text = "Gmail accepted the test email for " + to + ". Check that inbox for the message.";
                 }
                 catch (FormatException error) { feedback.Text = error.Message; }
-                catch (Exception error) { feedback.Text = GmailSendError(error); }
+                catch (Exception error)
+                {
+                    feedback.Text = GmailSendError(error);
+                    MessageBox.Show(dialog, GmailSendError(error) + "\n\nDiagnostic codes: " + GmailDiagnostic(error) +
+                        "\n\nThese codes do not include your email address or password.", "Email test result",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
                 finally
                 {
                     testing = false;
@@ -1347,6 +1353,23 @@ internal sealed class TimeClock : Form, IMessageFilter
         return "Gmail send could not be confirmed. Check Gmail Sent before retrying.";
     }
 
+    private static string GmailDiagnostic(Exception error)
+    {
+        var codes = new List<string>();
+        for (Exception cause = error; cause != null && codes.Count < 8; cause = cause.InnerException)
+        {
+            var smtp = cause as SmtpException;
+            var socket = cause as System.Net.Sockets.SocketException;
+            if (smtp != null) codes.Add("SMTP:" + (int)smtp.StatusCode);
+            else if (socket != null) codes.Add("Socket:" + (int)socket.SocketErrorCode);
+            else if (cause is System.Security.Authentication.AuthenticationException) codes.Add("TLS");
+            else if (cause is CryptographicException) codes.Add("PasswordUnlock");
+            else if (cause is TimeoutException) codes.Add("Timeout");
+            else if (cause is IOException) codes.Add("IO");
+            else codes.Add("Other");
+        }
+        return string.Join(" / ", codes.ToArray());
+    }
     private static void SendGmail(PayrollEmailSettings email, MailMessage message)
     {
         ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
