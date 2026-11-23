@@ -19,8 +19,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.13.0")]
-[assembly: AssemblyFileVersion("1.0.13.0")]
+[assembly: AssemblyVersion("1.0.14.0")]
+[assembly: AssemblyFileVersion("1.0.14.0")]
 
 public class Employee
 {
@@ -400,6 +400,7 @@ internal sealed class TimeClock : Form, IMessageFilter
         idleClock.SetFish(employees.Select((employee, index) => new { employee, index })
             .Where(item => item.employee.Shifts.Any(shift => !shift.End.HasValue))
             .Select(item => item.index));
+        idleClock.SetSupervisorFish(employees.FindIndex(employee => employee.IsSupervisor));
         idleClock.SetDate(now);
         idleClock.Text = now.ToString("h:mm tt", CultureInfo.InvariantCulture);
     }
@@ -770,10 +771,26 @@ internal sealed class TimeClock : Form, IMessageFilter
         bool restartingForUpdate = false;
         using (var dialog = SupervisorDialog("Supervisor timesheets", 760, 594))
         {
-            var layout = DialogLayout(dialog, 48, 0, 45, 44, 30);
+            var layout = DialogLayout(dialog, 48, 0, 45, 44, 44);
             var tools = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
             var picker = new ComboBox();
             ConfigureEmployeePicker(picker);
+            var pickerIndices = new List<int>();
+            bool showInactive = false;
+            Func<int> selectedIndex = () => picker.SelectedIndex < 0 ? -1 : pickerIndices[picker.SelectedIndex];
+            Action<int> reloadPicker = selected =>
+            {
+                picker.Items.Clear();
+                pickerIndices.Clear();
+                for (int i = 0; i < employees.Count; i++)
+                    if (showInactive || !employees[i].Inactive)
+                    {
+                        pickerIndices.Add(i);
+                        picker.Items.Add(SupervisorEmployeeName(employees[i]));
+                    }
+                int position = pickerIndices.IndexOf(selected);
+                if (picker.Items.Count > 0) picker.SelectedIndex = position >= 0 ? position : 0;
+            };
             tools.Controls.Add(new Label { Text = "Employee", AutoSize = true, Margin = new Padding(0, 7, 6, 0) });
             tools.Controls.Add(picker);
             var grid = TimesheetGrid("Clock in", "Clock out", "Break time", "Time worked");
@@ -785,7 +802,7 @@ internal sealed class TimeClock : Form, IMessageFilter
             {
                 grid.Rows.Clear();
                 if (picker.SelectedIndex < 0) return;
-                var shifts = employees[picker.SelectedIndex].Shifts;
+                var shifts = employees[selectedIndex()].Shifts;
                 DateTime now = DateTime.UtcNow;
                 foreach (int index in Enumerable.Range(0, shifts.Count).OrderByDescending(i => shifts[i].Start))
                 {
@@ -799,36 +816,33 @@ internal sealed class TimeClock : Form, IMessageFilter
             AddDialogButton(tools, "Add employee", 130, false, () =>
             {
                 if (!AddEmployee()) return;
-                picker.Items.Add(employees[employees.Count - 1].Name);
-                picker.SelectedIndex = employees.Count - 1;
+                reloadPicker(employees.Count - 1);
             });
             Button setPin = AddDialogButton(tools, "Set employee PIN", 155, false, () =>
             {
-                if (picker.SelectedIndex >= 0) ManageEmployeePin(picker.SelectedIndex);
+                if (picker.SelectedIndex >= 0) ManageEmployeePin(selectedIndex());
             });
             Action edit = () =>
             {
                 if (picker.SelectedIndex < 0 || grid.CurrentRow == null) return;
-                if (ShowShiftEditor(dialog, picker.SelectedIndex, (int)grid.CurrentRow.Tag)) refresh();
+                if (ShowShiftEditor(dialog, selectedIndex(), (int)grid.CurrentRow.Tag)) refresh();
             };
             Button addShift = AddDialogButton(footer, "Add shift", 115, true, () =>
             {
-                if (picker.SelectedIndex >= 0 && ShowShiftEditor(dialog, picker.SelectedIndex, null)) refresh();
+                if (picker.SelectedIndex >= 0 && ShowShiftEditor(dialog, selectedIndex(), null)) refresh();
             });
             Button editButton = AddDialogButton(footer, "Edit shift", 115, false, edit);
             Button delete = AddDialogButton(footer, "Delete shift", 125, false, () =>
             {
                 if (picker.SelectedIndex < 0 || grid.SelectedRows.Count != 1) return;
-                if (DeleteShift(dialog, picker.SelectedIndex, (int)grid.SelectedRows[0].Tag)) refresh();
+                if (DeleteShift(dialog, selectedIndex(), (int)grid.SelectedRows[0].Tag)) refresh();
             });
             Button changeStatus = null;
-            changeStatus = AddDialogButton(footer, "Deactivate employee", 155, false, () =>
+            changeStatus = AddDialogButton(footer, "Remove employee", 155, false, () =>
             {
-                int index = picker.SelectedIndex;
+                int index = selectedIndex();
                 if (index < 0 || !ChangeEmployeeStatus(dialog, index)) return;
-                picker.Items[index] = SupervisorEmployeeName(employees[index]);
-                picker.SelectedIndex = index;
-                changeStatus.Text = EmployeeStatusAction(employees[index].Inactive);
+                reloadPicker(index);
             });
             AddDialogButton(footer, "Weekly export", 145, true, () =>
             {
@@ -850,19 +864,30 @@ internal sealed class TimeClock : Form, IMessageFilter
             grid.CellDoubleClick += (sender, args) => { if (args.RowIndex >= 0) edit(); };
             picker.SelectedIndexChanged += (sender, args) =>
             {
-                int index = picker.SelectedIndex;
+                int index = selectedIndex();
                 addShift.Enabled = index >= 0;
                 setPin.Enabled = changeStatus.Enabled = index >= 0 && !employees[index].IsSupervisor;
                 changeStatus.Text = EmployeeStatusAction(index >= 0 && employees[index].Inactive);
                 refresh();
             };
-            foreach (Employee employee in employees) picker.Items.Add(SupervisorEmployeeName(employee));
+
             editButton.Enabled = delete.Enabled = addShift.Enabled = setPin.Enabled = changeStatus.Enabled = false;
-            if (picker.Items.Count > 0) picker.SelectedIndex = 0;
+            reloadPicker(-1);
             layout.Controls.Add(tools, 0, 0);
             layout.Controls.Add(grid, 0, 1);
             layout.Controls.Add(footer, 0, 2);
             layout.Controls.Add(settings, 0, 3);
+            var nameSettings = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+            AddDialogButton(nameSettings, "Set supervisor name", 180, false, () =>
+            {
+                if (!SetSupervisorName(dialog)) return;
+                int index = employees.FindIndex(employee => employee.IsSupervisor);
+                if (index >= 0) reloadPicker(index);
+            });
+            var inactiveToggle = new CheckBox { Text = "Show removed employees", AutoSize = true, Margin = new Padding(12, 10, 0, 0) };
+            inactiveToggle.CheckedChanged += (sender, args) => { int index = selectedIndex(); showInactive = inactiveToggle.Checked; reloadPicker(index); };
+            nameSettings.Controls.Add(inactiveToggle);
+            layout.Controls.Add(nameSettings, 0, 4);
             dialog.ShowDialog(this);
         }
         if (restartingForUpdate) Close();
@@ -870,12 +895,53 @@ internal sealed class TimeClock : Form, IMessageFilter
 
     private static string SupervisorEmployeeName(Employee employee)
     {
-        return employee.Name + (employee.Inactive ? " (Inactive)" : "");
+        return employee.Name + (employee.IsSupervisor && !string.Equals(employee.Name, "Supervisor", StringComparison.OrdinalIgnoreCase)
+            ? " (Supervisor)" : "") + (employee.Inactive ? " (Inactive)" : "");
+    }
+
+    private bool SetSupervisorName(Form owner)
+    {
+        using (var dialog = SupervisorDialog("Supervisor name", 470, 245))
+        {
+            var layout = DialogLayout(dialog, 40, 0, 35, 45);
+            layout.Controls.Add(new Label { Text = "Enter the supervisor's name for timesheets and payroll.", Dock = DockStyle.Fill }, 0, 0);
+            var fields = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+            TextBox name = AddField(fields, "Supervisor name", false, 80);
+            Employee supervisor = employees.FirstOrDefault(employee => employee.IsSupervisor);
+            if (supervisor != null && !string.Equals(supervisor.Name, "Supervisor", StringComparison.OrdinalIgnoreCase)) name.Text = supervisor.Name;
+            layout.Controls.Add(fields, 0, 1);
+            var feedback = new Label { Dock = DockStyle.Fill, ForeColor = Muted };
+            layout.Controls.Add(feedback, 0, 2);
+            var actions = new FlowLayoutPanel { Dock = DockStyle.Fill };
+            Button save = AddDialogButton(actions, "Save", 100, true, () =>
+            {
+                string value = name.Text.Trim();
+                if (value.Length == 0 || employees.Any(employee => !employee.IsSupervisor &&
+                    string.Equals(employee.Name, value, StringComparison.OrdinalIgnoreCase)))
+                {
+                    feedback.Text = "Enter a name that is not already used by another employee.";
+                    return;
+                }
+                if (SaveChange(records =>
+                {
+                    Employee record = records.FirstOrDefault(employee => employee.IsSupervisor);
+                    if (record == null) records.Add(new Employee { Name = value, IsSupervisor = true });
+                    else record.Name = value;
+                })) dialog.DialogResult = DialogResult.OK;
+                else feedback.Text = "Could not save the name. Please try again.";
+            });
+            Button cancel = AddDialogButton(actions, "Cancel", 100, false, dialog.Close);
+            layout.Controls.Add(actions, 0, 3);
+            dialog.AcceptButton = save;
+            dialog.CancelButton = cancel;
+            new TouchKeyboard(dialog).Attach(false, name);
+            return dialog.ShowDialog(owner) == DialogResult.OK;
+        }
     }
 
     private static string EmployeeStatusAction(bool inactive)
     {
-        return inactive ? "Reactivate employee" : "Deactivate employee";
+        return inactive ? "Restore employee" : "Remove employee";
     }
 
     private bool ChangeEmployeeStatus(Form owner, int index)
@@ -891,8 +957,8 @@ internal sealed class TimeClock : Form, IMessageFilter
 
         string title = EmployeeStatusAction(employee.Inactive);
         string message = deactivate
-            ? "Deactivate " + employee.Name + "? They will be removed from the punch screen. Their shifts stay available for payroll."
-            : "Reactivate " + employee.Name + "? They will be able to clock in again.";
+            ? "Remove " + employee.Name + " from active employees? Their PIN will stop working, but their timesheets remain available for payroll."
+            : "Restore " + employee.Name + "? Their PIN will work again.";
         if (MessageBox.Show(owner, message, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question,
             MessageBoxDefaultButton.Button2) != DialogResult.Yes)
             return false;
@@ -1407,7 +1473,7 @@ internal sealed class TimeClock : Form, IMessageFilter
         {
             return new[]
             {
-                IsTotal ? "Employee total" : "Shift", Employee.Name,
+                IsTotal ? "Employee total" : "Shift", SupervisorEmployeeName(Employee),
                 Start.HasValue ? PayrollTime(Start.Value) : "", End.HasValue ? PayrollTime(End.Value) : "",
                 Duration(BreakTime), Duration(WorkedTime), WorkedTime.TotalHours.ToString("0.0000", CultureInfo.InvariantCulture),
                 Employee.Inactive ? "Inactive" : "Active"
@@ -2541,7 +2607,7 @@ internal sealed class TimeClock : Form, IMessageFilter
         Employee employee = SelectedEmployee;
         Shift shift = ActiveShift;
         DateTime now = DateTime.UtcNow;
-        employeeName.Text = employee == null ? "" : employee.Name;
+        employeeName.Text = employee == null ? "" : SupervisorEmployeeName(employee);
         status.Text = shift == null ? "Clocked out" : "Clocked in";
         elapsed.Text = Duration(shift == null ? TimeSpan.Zero : shift.Worked(now));
         details.Text = shift == null ? "Time worked" :

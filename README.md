@@ -1,12 +1,16 @@
 # ClockIt!
 
-ClockIt! is a native Windows desktop time clock for a shared workstation or tablet. Employees enter their PIN to open their clock-in screen, then tap the green **Clock In** or red **Clock Out** button. After confirming the punch, the app shows the fishbowl: the employee's fish drops in when they clock in, or floats to the surface and disappears when they clock out. Tap the screen to return to the PIN pad.
+ClockIt! is a native Windows desktop time clock for a shared workstation or tablet. Employees enter their PIN to open their clock-in screen, then tap the green **Clock In** or red **Clock Out** button. After confirming the punch, the app shows the fishbowl: the employee's fish drops in when they clock in, or a little fisherman reels it out when they clock out. Tap the screen to return to the PIN pad.
 
 ## Run ClockIt!
 
 Download the Windows executable from [Releases](../../releases) and open it. On first launch, the person setting up the workstation creates a private four-digit supervisor PIN. Enter that PIN on the main PIN pad to clock in or out as Supervisor. The **Supervisor menu** button on that screen opens timesheets and settings. The gear in the bottom-right corner of the PIN pad also opens the menu after PIN verification.
 
 The supervisor panel lets you review timesheets, add or correct shifts, and delete mistaken entries. **Weekly export** previews completed shifts and employee totals, flags open shifts, and lets you save a PDF. A supervisor can also edit a shift directly from the preview.
+
+Select **Set supervisor name** in the supervisor panel to show the supervisor's name on their clock screen and payroll reports. Existing shifts and the supervisor PIN stay with the same account.
+
+To remove a former employee, select their name in the supervisor panel and choose **Remove employee**. Their PIN stops working, while their inactive record and shifts remain available for payroll. Choose **Restore employee** to reactivate them. Close any open shift before removing an employee.
 
 To email the PDF report, open **Payroll email** and configure the Gmail sender, Google app password, and payroll recipient. You can test delivery with an attachment-free message before sending the real report.
 
