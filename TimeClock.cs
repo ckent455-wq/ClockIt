@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Diagnostics;
@@ -19,8 +20,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.15.0")]
-[assembly: AssemblyFileVersion("1.0.15.0")]
+[assembly: AssemblyVersion("1.0.16.0")]
+[assembly: AssemblyFileVersion("1.0.16.0")]
 
 public class Employee
 {
@@ -41,6 +42,8 @@ public class Shift
     public DateTime Start { get; set; }
     public DateTime? End { get; set; }
     public List<Break> Breaks { get; set; }
+    [DefaultValue(false)]
+    public bool WorkFromHome { get; set; }
 
     public Shift()
     {
@@ -793,7 +796,7 @@ internal sealed class TimeClock : Form, IMessageFilter
             };
             tools.Controls.Add(new Label { Text = "Employee", AutoSize = true, Margin = new Padding(0, 7, 6, 0) });
             tools.Controls.Add(picker);
-            var grid = TimesheetGrid("Clock in", "Clock out", "Break time", "Time worked");
+            var grid = TimesheetGrid("Clock in", "Clock out", "Break time", "Time worked", "Shift type");
             grid.AccessibleName = "Employee timesheet";
             grid.Columns[0].FillWeight = grid.Columns[1].FillWeight = 130;
             var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 7, 0, 0), WrapContents = false };
@@ -808,7 +811,8 @@ internal sealed class TimeClock : Form, IMessageFilter
                 {
                     Shift shift = shifts[index];
                     int row = grid.Rows.Add(LocalTime(shift.Start), shift.End.HasValue ? LocalTime(shift.End.Value) : "In progress",
-                        Duration(shift.BreakTime(now)), Duration(shift.Worked(now)));
+                        Duration(shift.BreakTime(now)), Duration(shift.Worked(now)),
+                        shift.WorkFromHome ? "Work from home" : "");
                     grid.Rows[row].Tag = index;
                 }
             };
@@ -1686,6 +1690,12 @@ internal sealed class TimeClock : Form, IMessageFilter
             connect(clockOutField);
             fields.Controls.Add(clockIn);
             fields.Controls.Add(clockOutField);
+            var workFromHome = new CheckBox
+            {
+                Text = "Work from home", AutoSize = true, MinimumSize = new Size(0, 36),
+                Checked = original != null && original.WorkFromHome
+            };
+            fields.Controls.Add(workFromHome);
 
             amButton = AddDialogButton(periods, "AM", 76, false, () => { pm = false; pending = true; selectTime(); refresh(); });
             pmButton = AddDialogButton(periods, "PM", 76, false, () => { pm = true; pending = true; selectTime(); refresh(); });
@@ -1725,7 +1735,11 @@ internal sealed class TimeClock : Form, IMessageFilter
 
             Func<Shift> readShift = () =>
             {
-                var revised = new Shift { Start = clockIn.ReadUtc().Value, End = clockOutField.ReadUtc() };
+                var revised = new Shift
+                {
+                    Start = clockIn.ReadUtc().Value, End = clockOutField.ReadUtc(),
+                    WorkFromHome = workFromHome.Checked
+                };
                 if (original != null)
                     foreach (Break interval in original.Breaks)
                         revised.Breaks.Add(new Break { Start = interval.Start, End = interval.End ?? revised.End });
