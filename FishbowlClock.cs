@@ -4,12 +4,15 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
+using System.Media;
 using System.Windows.Forms;
 
 internal sealed class FishbowlClock : Button
 {
     private static readonly Color DeepBlue = Color.FromArgb(10, 30, 45);
     private enum Season { Winter, Spring, Summer, Fall }
+    private enum ClockOutAnimation { Caught, Floats, Eaten }
 
     private static readonly Color[] WaterTops =
     {
@@ -52,8 +55,11 @@ internal sealed class FishbowlClock : Button
     private readonly Dictionary<int, bool> costumes = new Dictionary<int, bool>();
     private int transitionFish = -1;
     private bool leaving;
+    private ClockOutAnimation clockOutAnimation;
     private readonly Stopwatch transition = new Stopwatch();
     private float transitionStart;
+    private readonly Stream sharkCueStream;
+    private readonly SoundPlayer sharkCue;
 
     public void SetFish(IEnumerable<int> employeeIndices)
     {
@@ -67,12 +73,35 @@ internal sealed class FishbowlClock : Button
 
     public void BeginPunchAnimation(int employeeIndex, bool isLeaving)
     {
+        if (transitionFish >= 0 && leaving && clockOutAnimation == ClockOutAnimation.Eaten)
+            sharkCue.Stop();
+
         transitionFish = employeeIndex;
         leaving = isLeaving;
+        if (isLeaving) clockOutAnimation = (ClockOutAnimation)costumeRandom.Next(3);
         transitionStart = (float)swimming.Elapsed.TotalSeconds;
         transition.Restart();
+        if (leaving && clockOutAnimation == ClockOutAnimation.Eaten)
+            PlaySharkCue();
         Invalidate();
     }
+
+    private void PlaySharkCue()
+    {
+        try
+        {
+            sharkCue.Play();
+        }
+        catch (InvalidOperationException error)
+        {
+            Debug.WriteLine(error);
+        }
+        catch (TimeoutException error)
+        {
+            Debug.WriteLine(error);
+        }
+    }
+
     private Season season;
 
     public void SetDate(DateTime localDate)
@@ -87,6 +116,8 @@ internal sealed class FishbowlClock : Button
 
     public FishbowlClock()
     {
+        sharkCueStream = typeof(FishbowlClock).Assembly.GetManifestResourceStream("SharkCue.wav");
+        sharkCue = new SoundPlayer(sharkCueStream);
         DoubleBuffered = true;
         animation.Tick += (sender, args) => Invalidate();
     }
@@ -105,6 +136,8 @@ internal sealed class FishbowlClock : Button
             animation.Stop();
             swimming.Stop();
             transition.Reset();
+            if (transitionFish >= 0 && leaving && clockOutAnimation == ClockOutAnimation.Eaten)
+                sharkCue.Stop();
             transitionFish = -1;
         }
     }
@@ -117,8 +150,15 @@ internal sealed class FishbowlClock : Button
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) animation.Dispose();
         base.Dispose(disposing);
+        if (disposing)
+        {
+            animation.Dispose();
+            if (transitionFish >= 0 && leaving && clockOutAnimation == ClockOutAnimation.Eaten)
+                sharkCue.Stop();
+            sharkCue.Dispose();
+            sharkCueStream.Dispose();
+        }
     }
 
     protected override void OnPaint(PaintEventArgs args)
@@ -140,10 +180,10 @@ internal sealed class FishbowlClock : Button
         using (var glow = new LinearGradientBrush(new Rectangle(75, 135, 650, 365), WaterBottoms[(int)season], BackColor, 90))
             canvas.FillEllipse(glow, 75, 135, 650, 365);
 
-        DrawBowl(canvas, time);
         using (var color = new SolidBrush(ForeColor))
         using (var alignment = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
             canvas.DrawString(Text, Font, color, new RectangleF(0, 8, 800, 120), alignment);
+        DrawBowl(canvas, time);
     }
 
     private void DrawBowl(Graphics canvas, float time)
@@ -176,25 +216,29 @@ internal sealed class FishbowlClock : Button
             DrawBubbles(canvas, time);
             canvas.Restore(clipped);
 
-            float transitionDuration = leaving ? 6f : 4.5f;
-            bool animating = transitionFish >= 0 && transition.IsRunning && transition.Elapsed.TotalSeconds < transitionDuration;
-            if (animating && leaving && season == Season.Winter)
+            bool caught = leaving && clockOutAnimation == ClockOutAnimation.Caught;
+            float transitionDuration = caught ? 6f : 4.5f;
+            float elapsed = (float)transition.Elapsed.TotalSeconds;
+            bool animating = transitionFish >= 0 && transition.IsRunning && elapsed < transitionDuration;
+            bool fishing = animating && caught;
+            float sharkProgress = animating && leaving && clockOutAnimation == ClockOutAnimation.Eaten
+                ? elapsed / transitionDuration : -1;
+            if (fishing && season == Season.Winter)
                 DrawIce(canvas, bowl);
             int count = fish.Length + (animating && leaving ? 1 : 0);
             float scale = (float)Math.Min(1, Math.Sqrt(3.0 / Math.Max(1, count)));
             foreach (int index in fish)
             {
                 if (animating && !leaving && index == transitionFish) continue;
-                DrawFish(canvas, bowl, time, scale, index, -1, false);
+                DrawFish(canvas, bowl, time, scale, index, -1, false, sharkProgress);
             }
             if (animating && !leaving && transitionFish == supervisorFish)
-                DrawSupervisorLimo(canvas, (float)transition.Elapsed.TotalSeconds);
+                DrawSupervisorLimo(canvas, elapsed);
             if (animating)
                 DrawFish(canvas, bowl, leaving ? transitionStart : time, scale, transitionFish,
-                    (float)(transition.Elapsed.TotalSeconds / transitionDuration), leaving);
+                    elapsed / transitionDuration, leaving);
 
-            if (animating && leaving) DrawFisherman(canvas, season == Season.Winter,
-                (float)(transition.Elapsed.TotalSeconds / transitionDuration));
+            if (fishing) DrawFisherman(canvas, season == Season.Winter, elapsed / transitionDuration);
 
             using (var outline = new Pen(Color.FromArgb(163, 123, 217, 226), 3))
                 canvas.DrawPath(outline, bowl);
@@ -351,11 +395,17 @@ internal sealed class FishbowlClock : Button
         }
     }
 
-    private void DrawFish(Graphics canvas, GraphicsPath bowl, float time, float scale, int index, float progress, bool leaving)
+    private static float FishDepth(int index)
+    {
+        return 275 + index * 47 % 140;
+    }
+
+    private void DrawFish(Graphics canvas, GraphicsPath bowl, float time, float scale, int index, float progress, bool leaving,
+        float sharkProgress = -1)
     {
         int style = index % 3;
         int color = index % FishColors.Length;
-        float depth = 275 + (index * 47 % 140);
+        float depth = FishDepth(index);
         double speed = 0.64 + 0.09 * (index % 4);
         double offset = index * 2.4;
         float size = scale * (1.0f - 0.15f * (index % 3));
@@ -364,12 +414,49 @@ internal sealed class FishbowlClock : Button
         float y = depth + (float)Math.Sin(cycle * 1.7) * 13;
         float direction = Math.Cos(cycle) >= 0 ? 1 : -1;
         float tail = (float)Math.Sin(time * 10 + offset) * 5;
+        if (sharkProgress >= 0)
+        {
+            // Dart away as the shark enters, then ease back after it passes.
+            float dart = Math.Min(1, Math.Max(0, (sharkProgress - 0.12f) / 0.24f));
+            float recover = Math.Min(1, Math.Max(0, (sharkProgress - 0.68f) / 0.32f));
+            float panic = (1 - (1 - dart) * (1 - dart)) * (1 - recover * recover * (3 - 2 * recover));
+            bool hideAbove = depth < FishDepth(transitionFish);
+            float refugeY = hideAbove ? 255 + index % 3 * 8 : 425 + index % 3 * 8;
+            float refugeX = 280 + index % 5 * 60;
+            x += (refugeX - x) * panic;
+            y += (refugeY - y) * panic;
+            tail += (float)Math.Sin(time * 39 + offset) * 8 * panic;
+        }
         float bodyHeight = style == 1 ? 29 : style == 2 ? 34 : 42;
         int alpha = 255;
         float rotation = 0;
+        bool dying = progress >= 0 && leaving && clockOutAnimation == ClockOutAnimation.Floats;
+        bool eaten = progress >= 0 && leaving && clockOutAnimation == ClockOutAnimation.Eaten;
         if (progress >= 0)
         {
-            if (leaving)
+            if (dying)
+            {
+                float roll = Math.Min(1, progress / 0.3f);
+                float floatUp = Math.Min(1, progress / 0.7f);
+                floatUp = floatUp * floatUp * (3 - 2 * floatUp);
+                y += (227 - y) * floatUp;
+                x += 18 * direction * floatUp;
+                rotation = 180 * direction * roll;
+                tail *= 1 - roll;
+                float fade = Math.Max(0, (progress - 0.75f) / 0.25f);
+                alpha = (int)(255 * (1 - fade));
+            }
+            else if (eaten)
+            {
+                DrawShark(canvas, bowl, x, y, progress);
+                if (progress >= 0.55f) return;
+                float gulp = Math.Max(0, (progress - 0.45f) / 0.1f);
+                x += 20 * gulp;
+                size *= 1 - 0.85f * gulp;
+                alpha = (int)(255 * (1 - gulp));
+                tail = (float)Math.Sin(progress * 90) * 6;
+            }
+            else if (leaving)
             {
                 float seconds = progress * 6f;
                 float rise = Math.Max(0, Math.Min(1, (seconds - 1.5f) / 3f));
@@ -422,7 +509,8 @@ internal sealed class FishbowlClock : Button
             }
         }
         GraphicsState transform = canvas.Save();
-        if (progress < 0 || (!leaving && progress * 4.5f >= (index == supervisorFish ? 2.6f : 1.15f))) canvas.SetClip(bowl, CombineMode.Intersect);
+        if (progress < 0 || dying || eaten || (!leaving && progress * 4.5f >= (index == supervisorFish ? 2.6f : 1.15f)))
+            canvas.SetClip(bowl, CombineMode.Intersect);
         canvas.TranslateTransform(x, y);
         canvas.RotateTransform(rotation);
         canvas.ScaleTransform(direction * size, size);
@@ -455,9 +543,20 @@ internal sealed class FishbowlClock : Button
                 canvas.FillEllipse(fin, -3, 3, 7, 7);
                 canvas.FillEllipse(fin, 6, -11, 5, 5);
             }
-            canvas.FillEllipse(dark, 19, -8, 7, 7);
-            using (var shine = new SolidBrush(Color.FromArgb(alpha, Color.White)))
-                canvas.FillEllipse(shine, 22, -7, 2, 2);
+            if (dying)
+            {
+                using (var closedEye = new Pen(dark.Color, 2))
+                {
+                    canvas.DrawLine(closedEye, 19, -8, 26, -1);
+                    canvas.DrawLine(closedEye, 26, -8, 19, -1);
+                }
+            }
+            else
+            {
+                canvas.FillEllipse(dark, 19, -8, 7, 7);
+                using (var shine = new SolidBrush(Color.FromArgb(alpha, Color.White)))
+                    canvas.FillEllipse(shine, 22, -7, 2, 2);
+            }
         }
 
         bool dressed;
@@ -468,6 +567,76 @@ internal sealed class FishbowlClock : Button
         }
         if (index == supervisorFish) DrawCrown(canvas, bodyHeight, alpha);
         else if (dressed) DrawCostume(canvas, bodyHeight, alpha);
+        canvas.Restore(transform);
+    }
+
+    private static void DrawShark(Graphics canvas, GraphicsPath bowl, float preyX, float preyY, float progress)
+    {
+        const float bite = 0.55f;
+        float approach = Math.Min(1, progress / bite);
+        float departure = Math.Max(0, (progress - bite) / (1 - bite));
+        float x = 65 + (preyX - 29 - 65) * approach + (760 - preyX + 29) * departure;
+        float y = preyY + 8 * (float)Math.Sin(progress * Math.PI * 4) * (1 - approach);
+        float jaw = 30 * Math.Max(0, 1 - Math.Abs(progress - 0.49f) / 0.12f);
+        float tail = 6 * (float)Math.Sin(progress * 55);
+
+        GraphicsState transform = canvas.Save();
+        canvas.SetClip(bowl, CombineMode.Intersect);
+        canvas.TranslateTransform(x, y);
+        using (var body = new SolidBrush(Color.FromArgb(122, 157, 185)))
+        using (var fin = new SolidBrush(Color.FromArgb(82, 116, 148)))
+        using (var belly = new SolidBrush(Color.FromArgb(216, 232, 236)))
+        using (var mouth = new SolidBrush(DeepBlue))
+        using (var teeth = new SolidBrush(Color.White))
+        using (var gills = new Pen(fin.Color, 2))
+        using (var silhouette = new GraphicsPath())
+        using (var underside = new GraphicsPath())
+        {
+            float tailX = -92 + tail;
+            canvas.FillPolygon(fin, new[]
+            {
+                new PointF(-60, 1), new PointF(tailX, -42),
+                new PointF(tailX + 10, -4), new PointF(tailX + 2, 32)
+            });
+            canvas.FillPolygon(fin, new[] { new PointF(-26, -18), new PointF(-30, -56), new PointF(11, -21) });
+            silhouette.AddBezier(-69, 1, -36, -8, -32, -30, 9, -25);
+            silhouette.AddBezier(9, -25, 35, -24, 49, -15, 59, -3);
+            silhouette.AddBezier(59, -3, 53, 15, 29, 25, 4, 23);
+            silhouette.AddBezier(4, 23, -31, 21, -47, 6, -69, 1);
+            silhouette.CloseFigure();
+            canvas.FillPath(body, silhouette);
+
+            underside.AddBezier(-69, 1, -24, 11, 18, 14, 59, -3);
+            underside.AddBezier(59, -3, 53, 15, 29, 25, 4, 23);
+            underside.AddBezier(4, 23, -31, 21, -47, 6, -69, 1);
+            underside.CloseFigure();
+            canvas.FillPath(belly, underside);
+            canvas.FillPolygon(fin, new[] { new PointF(6, 10), new PointF(-25, 41), new PointF(-14, 11) });
+            for (int gill = -1; gill <= 9; gill += 5)
+                canvas.DrawArc(gills, gill, -13, 9, 19, 105, 145);
+
+            if (jaw > 0)
+            {
+                float top = 4 - jaw / 3;
+                float bottom = 4 + jaw / 3;
+                canvas.FillPolygon(mouth, new[]
+                {
+                    new PointF(18, 7), new PointF(51, top), new PointF(48, bottom)
+                });
+                for (int tooth = 29; tooth <= 45; tooth += 8)
+                {
+                    float edge = 7 + (top - 7) * (tooth - 18) / 33;
+                    canvas.FillPolygon(teeth, new[]
+                    {
+                        new PointF(tooth, edge), new PointF(tooth + 5, edge + (top - 7) * 5 / 33),
+                        new PointF(tooth + 3, edge + jaw / 7)
+                    });
+                }
+            }
+            else canvas.DrawLine(gills, 21, 8, 47, 5);
+            canvas.FillEllipse(mouth, 35, -12, 7, 7);
+            canvas.FillEllipse(teeth, 39, -11, 2, 2);
+        }
         canvas.Restore(transform);
     }
 

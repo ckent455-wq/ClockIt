@@ -19,8 +19,8 @@ using System.Xml.Serialization;
 
 [assembly: AssemblyTitle("ClockIt!")]
 [assembly: AssemblyProduct("ClockIt!")]
-[assembly: AssemblyVersion("1.0.14.0")]
-[assembly: AssemblyFileVersion("1.0.14.0")]
+[assembly: AssemblyVersion("1.0.15.0")]
+[assembly: AssemblyFileVersion("1.0.15.0")]
 
 public class Employee
 {
